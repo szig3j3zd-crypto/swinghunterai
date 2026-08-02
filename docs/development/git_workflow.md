@@ -25,9 +25,7 @@
         ↓
 ⑤ 動作確認・テスト
         ↓
-⑥ CHANGELOG更新
-        ↓
-⑦ Gitコミット
+⑥ Gitコミット
 ```
 
 設計変更がある場合は、必ずコードより先にドキュメントを更新する。
@@ -110,7 +108,6 @@ SwingHunter AIではフェーズ単位・バージョン単位で管理する。
 - Pythonコード
 - tests
 - README.md
-- CHANGELOG.md
 - docs配下
 - requirements.txt
 - 設定ファイル
@@ -146,7 +143,6 @@ SwingHunter AIではフェーズ単位・バージョン単位で管理する。
 - システム構成
 - フォルダ構成
 - 分析仕様書
-- CHANGELOG
 
 コードとドキュメントは常に一致させる。
 

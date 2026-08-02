@@ -108,7 +108,6 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │
 ├── .env                           APIキー等の環境変数
 ├── .gitignore                     Git管理対象外設定
-├── CHANGELOG.md                   更新履歴
 ├── main.py                        メインプログラム
 ├── README.md                      プロジェクト概要
 ├── requirements.txt               Pythonライブラリ一覧
