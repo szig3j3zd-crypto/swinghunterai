@@ -1,4 +1,6 @@
-from data.downloader import get_stock_data
+from data.download_manager import DownloadManager
+
+manager = DownloadManager()
 
 tickers = [
     "7203.T",
@@ -6,14 +8,12 @@ tickers = [
     "9432.T"
 ]
 
-data = get_stock_data(tickers)
+for ticker in tickers:
 
-print(type(data))
+    provider_name, data = manager.download(ticker)
 
-print()
+    print(ticker, provider_name, len(data), "件")
 
-print(data.head())
+    print(data.head())
 
-print()
-
-print(data.columns)
+    print()

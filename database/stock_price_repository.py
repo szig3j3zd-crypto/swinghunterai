@@ -3,6 +3,40 @@ import pandas as pd
 from database.db import create_connection
 
 
+def create_table():
+    """
+    stock_pricesテーブル作成
+    """
+
+    conn = create_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS stock_prices (
+
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            code TEXT,
+            date TEXT,
+
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+
+            volume INTEGER,
+
+            UNIQUE(code, date)
+        )
+        """
+    )
+
+    conn.commit()
+    conn.close()
+
+
 def save_stock_data(data, code):
     """
     株価データを保存する。

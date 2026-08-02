@@ -18,7 +18,7 @@ df = pd.read_sql_query(query, conn)
 conn.close()
 
 if df.empty:
-    print("✅ 重複データはありません。")
+    print("[OK] 重複データはありません。")
 else:
-    print("❌ 重複データがあります。")
+    print("[NG] 重複データがあります。")
     print(df)

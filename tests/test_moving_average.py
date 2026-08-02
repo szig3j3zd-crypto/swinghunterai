@@ -1,9 +1,9 @@
-from database.stock_reader import get_stock_data_from_db
+from database.stock_price_reader import get_stock_data
 from indicators.moving_average import calculate_moving_average
 
 
 # トヨタ株取得
-df = get_stock_data_from_db(
+df = get_stock_data(
     "7203"
 )
 

@@ -1,9 +1,14 @@
-from database.stock_reader import get_latest_date
-from database.stock_repository import save_stock_data
+import time
+
+from database.stock_price_reader import get_latest_date
+from database.stock_price_repository import save_stock_data
 
 from data.download_manager import DownloadManager
 from data.failed_download_manager import FailedDownloadManager
 from data.csv_writer import save_stock_csv
+
+
+REQUEST_SLEEP = 1
 
 
 manager = DownloadManager()
@@ -47,12 +52,12 @@ def main():
 
         try:
 
-            stock_data = manager.download(
+            provider_name, stock_data = manager.download(
                 ticker,
                 latest_date
             )
 
-            if stock_data.empty:
+            if stock_data is None or stock_data.empty:
 
                 print("取得失敗")
 
@@ -99,7 +104,7 @@ def main():
 
             error += 1
 
-        manager.wait(1)
+        time.sleep(REQUEST_SLEEP)
 
     if retry_failed:
 

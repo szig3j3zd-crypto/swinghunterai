@@ -2,7 +2,7 @@ import time
 import pandas as pd
 
 from database.stock_master_reader import get_active_stocks
-from database.stock_price_repository import save_stock_data
+from database.stock_price_repository import create_table, save_stock_data
 
 from data.download_manager import DownloadManager
 from data.csv_writer import save_stock_csv
@@ -37,6 +37,8 @@ def main():
     print("=" * 40)
     print("株価初期データ取得開始")
     print("=" * 40)
+
+    create_table()
 
     stocks = get_active_stocks()
 

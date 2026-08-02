@@ -4,7 +4,7 @@ import os
 def save_stock_csv(
     data,
     company_name,
-    code
+    ticker
 ):
     """
     株価データをCSV保存
@@ -35,7 +35,7 @@ def save_stock_csv(
     # ファイル名
     file_name = (
         f"{save_dir}/"
-        f"{company_name}_{code.replace('.T', '')}.csv"
+        f"{company_name}_{ticker.replace('.T', '')}.csv"
     )
 
     # CSV保存

@@ -1,7 +1,9 @@
 from database.stock_master_reader import get_active_stocks
-from data.providers.yahoo_provider import get_stock_data
-from database.stock_repository import save_stock_data
+from database.stock_price_repository import save_stock_data
+from data.download_manager import DownloadManager
 
+
+manager = DownloadManager()
 
 
 def download_all_stocks():
@@ -42,7 +44,7 @@ def download_all_stocks():
         try:
 
             # 株価取得
-            data = get_stock_data(ticker)
+            provider_name, data = manager.download(ticker)
 
 
             # データ取得失敗チェック

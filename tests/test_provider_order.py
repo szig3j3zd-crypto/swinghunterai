@@ -1,9 +1,11 @@
-from data.data_provider import providers
+from data.provider_manager import ProviderManager
+
+manager = ProviderManager()
 
 print()
 
 print("===== Provider一覧 =====")
 
-for provider in providers:
+for provider in manager.providers:
 
     print(provider.name)

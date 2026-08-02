@@ -1,10 +1,11 @@
-from data.downloader import get_stock_data
+from data.download_manager import DownloadManager
 
-print("module :", get_stock_data.__module__)
-print("file   :", get_stock_data.__code__.co_filename)
+manager = DownloadManager()
+
+provider_name, data = manager.download("7203.T")
+
+print("provider:", provider_name)
 print()
-
-data = get_stock_data("7203.T")
 
 print(data.head())
 print()
