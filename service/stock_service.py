@@ -1,5 +1,5 @@
 from database.stock_master_reader import get_active_stocks
-from data.downloader import get_stock_data
+from data.providers.yahoo_provider import get_stock_data
 from database.stock_repository import save_stock_data
 
 

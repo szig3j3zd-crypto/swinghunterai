@@ -11,6 +11,12 @@ __pycache__/
 logs/
 *.log
 
+# SQLite Database
+data/stock.db
+
+# Downloaded Stock Data
+data/stock_data/
+
 # SQLite temporary files
 *.db-journal
 *.sqlite-journal
@@ -21,3 +27,6 @@ logs/
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Environment
+.env

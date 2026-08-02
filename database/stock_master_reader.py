@@ -13,6 +13,12 @@ def get_active_stocks():
     SELECT *
     FROM stock_master
     WHERE active = 1
+      AND market IN (
+            'プライム（内国株式）',
+            'スタンダード（内国株式）',
+            'グロース（内国株式）'
+      )
+    ORDER BY code
     """
 
     data = pd.read_sql_query(
