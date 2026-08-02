@@ -1,20 +1,36 @@
-from database.stock_price_reader import get_stock_data
+import pandas as pd
+
 from indicators.moving_average import calculate_moving_average
 
 
-# トヨタ株取得
-df = get_stock_data(
-    "7203"
-)
+def _price_series(length):
+    return pd.DataFrame({
+        "code": ["7203"] * length,
+        "date": pd.date_range("2026-01-01", periods=length, freq="D"),
+        "close": list(range(1, length + 1)),
+    })
 
 
-print("取得データ")
-print(df.head())
+def test_sma5_matches_manual_average():
+    df = _price_series(6)
+
+    result = calculate_moving_average(df)
+
+    # close = [1, 2, 3, 4, 5, 6] -> 直近5件の平均
+    assert result["sma5"].iloc[-1] == (2 + 3 + 4 + 5 + 6) / 5
 
 
-# 移動平均計算
-result = calculate_moving_average(df)
+def test_row_count_is_unchanged():
+    df = _price_series(10)
+
+    result = calculate_moving_average(df)
+
+    assert len(result) == len(df)
 
 
-print("計算後")
-print(result.tail())
+def test_sma75_is_nan_when_not_enough_history():
+    df = _price_series(10)
+
+    result = calculate_moving_average(df)
+
+    assert result["sma75"].isna().all()

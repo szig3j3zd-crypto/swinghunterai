@@ -6,7 +6,7 @@ manager = ProviderManager()
 # テスト銘柄
 ticker = "7203.T"
 
-data, provider = manager.get_stock_data(ticker)
+provider, data = manager.get_stock_data(ticker)
 
 print()
 

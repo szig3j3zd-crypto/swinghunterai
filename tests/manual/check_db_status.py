@@ -12,7 +12,7 @@ print(cursor.fetchone()[0])
 
 print()
 
-print("===== stock_prices =====")
+print("===== stock_prices (保存済み銘柄数) =====")
 cursor.execute("""
 SELECT COUNT(DISTINCT code)
 FROM stock_prices

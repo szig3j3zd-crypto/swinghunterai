@@ -3,7 +3,7 @@ from data.provider_manager import ProviderManager
 
 manager = ProviderManager()
 
-df, provider = manager.get_stock_list()
+provider, df = manager.get_stock_list()
 
 print()
 print(f"Provider : {provider}")
