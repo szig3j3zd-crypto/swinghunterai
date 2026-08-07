@@ -24,13 +24,16 @@ needed to drive/verify the UI, not to run the app itself.
 
 ## Run (agent path): dashboard
 
-1. Launch the dashboard in the background, from the repo root, with
-   `PYTHONPATH` set so the app's absolute imports (`from config.config import
-   ...`, `from service.screening_service import ...`) resolve:
+1. Launch the dashboard in the background, from the repo root:
 
    ```bash
-   PYTHONPATH="$(pwd)" python -m streamlit run ui/dashboard.py --server.port 8501 --server.headless true &
+   python -m streamlit run ui/dashboard.py --server.port 8501 --server.headless true &
    ```
+
+   `ui/dashboard.py` inserts the repo root into `sys.path` itself at the top
+   of the file (`streamlit run` does not add it automatically, and the app's
+   absolute imports like `from config.config import ...` need it) — no
+   `PYTHONPATH` env var needed.
 
 2. Wait for it to actually serve (don't `sleep` blindly):
 
@@ -157,4 +160,4 @@ not part of the normal automated suite; run individually if needed.
 | `ModuleNotFoundError: No module named 'streamlit'` / `'playwright'` | Not installed yet — see Prerequisites. |
 | Driver hangs / times out waiting for "Stop" to disappear | Universe scan (TSE Prime, ~1,559 stocks) genuinely takes 60-90s; pass `--timeout` higher if scanning a larger custom stock list. |
 | `curl: (7) Failed to connect` when polling port 8501 | Streamlit hasn't started yet (first launch can take a few seconds) or a stale process is still holding the port from a prior run — stop it first (see Gotchas). |
-| Dashboard loads but `from config.config import ...` fails inside Streamlit's own traceback | `PYTHONPATH` wasn't set to the repo root before `streamlit run` — see step 1 above. |
+| Dashboard shows `ModuleNotFoundError: No module named 'config'` (or similar) in its own error page | The `sys.path.insert(...)` bootstrap at the top of `ui/dashboard.py` is missing or was removed — it's what makes the repo root importable without a `PYTHONPATH` env var. This bit a real run once (initial instructions to the user omitted it entirely) before the bootstrap was added; if it regresses, that's the fix. |

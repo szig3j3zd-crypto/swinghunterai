@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+
+# streamlit run はプロジェクトルートをsys.pathへ自動追加しないため、
+# `from config.config import ...` 等の絶対importが解決できるよう明示的に追加する。
+# これにより `PYTHONPATH` の設定なしで `streamlit run ui/dashboard.py` を実行できる。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import pandas as pd
 import streamlit as st
 
