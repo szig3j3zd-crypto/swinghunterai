@@ -22,6 +22,20 @@ python -m playwright install chromium      # ~150MB, downloads a headless Chromi
 `playwright` is intentionally **not** added to `requirements.txt` — it's only
 needed to drive/verify the UI, not to run the app itself.
 
+**First-ever Streamlit run on a machine/user profile blocks on stdin.**
+Streamlit shows a one-time onboarding prompt ("Welcome to Streamlit! ...
+Email:") and waits for Enter before it does anything else — no server, no
+browser, nothing, until that's answered. `--server.headless true` happens to
+skip it, which is why this wasn't caught until a real interactive
+(non-headless) run hit it. Pre-empt it once per machine:
+
+```bash
+mkdir -p ~/.streamlit
+printf '[general]\nemail = ""\n' > ~/.streamlit/credentials.toml
+```
+
+(Windows: `~` is the user profile dir, e.g. `C:\Users\<user>\.streamlit\credentials.toml`.)
+
 ## Run (agent path): dashboard
 
 1. Launch the dashboard in the background, from the repo root:
@@ -161,3 +175,4 @@ not part of the normal automated suite; run individually if needed.
 | Driver hangs / times out waiting for "Stop" to disappear | Universe scan (TSE Prime, ~1,559 stocks) genuinely takes 60-90s; pass `--timeout` higher if scanning a larger custom stock list. |
 | `curl: (7) Failed to connect` when polling port 8501 | Streamlit hasn't started yet (first launch can take a few seconds) or a stale process is still holding the port from a prior run — stop it first (see Gotchas). |
 | Dashboard shows `ModuleNotFoundError: No module named 'config'` (or similar) in its own error page | The `sys.path.insert(...)` bootstrap at the top of `ui/dashboard.py` is missing or was removed — it's what makes the repo root importable without a `PYTHONPATH` env var. This bit a real run once (initial instructions to the user omitted it entirely) before the bootstrap was added; if it regresses, that's the fix. |
+| Ran `streamlit run ui/dashboard.py` (no `--server.headless`) and nothing happens — no browser, terminal just sits there | It's stuck on the first-run "Welcome to Streamlit! ... Email:" onboarding prompt, waiting for Enter on stdin. Press Enter (blank is fine), or pre-empt it — see the `credentials.toml` snippet in Prerequisites. This actually happened to the user on first real (non-headless) use. |
