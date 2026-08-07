@@ -34,15 +34,22 @@ def calculate_moving_average(df):
         .mean()
     )
 
-    df["sma25"] = (
+    df["sma20"] = (
         df["close"]
-        .rolling(window=25)
+        .rolling(window=20)
         .mean()
     )
 
-    df["sma75"] = (
+    df["sma60"] = (
         df["close"]
-        .rolling(window=75)
+        .rolling(window=60)
+        .mean()
+    )
+
+    # 超長期線（トレンド判定には使用しない参考指標。表示切替はUI層でSHOW_MA300を参照）
+    df["sma300"] = (
+        df["close"]
+        .rolling(window=300)
         .mean()
     )
 

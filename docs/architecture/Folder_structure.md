@@ -12,11 +12,16 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │   └── AIコメント生成・AI分析機能（今後実装）
 │
 ├── analysis/    分析処理を管理するフォルダ
-│   ├── 分析処理
-│   └── check_stock_data.py        株価データ確認・分析用
+│   ├── check_stock_data.py        株価データ確認・分析用
+│   ├── swing_points.py            スイングハイ/ロー検出
+│   ├── price_zones.py             価格帯クラスタリング
+│   ├── support_resistance.py      支持線・抵抗線検出
+│   ├── ma_trend.py                MA並び順・傾き・トレンド判定
+│   ├── ma_cross.py                ゴールデンクロス・デッドクロス
+│   └── half_signal.py             半分シグナル判定
 │
 ├── backtest/    バックテストを管理するフォルダ
-│   └── 売買ルールのバックテスト
+│   └── simulator.py               シグナル抽出・トレードシミュレーション
 │
 ├── config/    システム設定を管理するフォルダ
 │   ├── config.py                  共通設定
@@ -68,15 +73,21 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │   ├── requirements_definition/　　　　要件定義書
 │   │   └── requirements_definition.md　要件定義書
 │   │
-│   └── roadmap/　　　　開発ロードマップ
-│       ├── roadmap_master.md          全体ロードマップ
-│       └── roadmap_ver1.0.md          Ver1.0開発計画
-│
-├── specifications/　　　　分析仕様書を管理するフォルダ
-│   └── 分析仕様書・判定ロジック仕様
+│   ├── roadmap/　　　　開発ロードマップ
+│   │   ├── roadmap_master.md          全体ロードマップ
+│   │   └── roadmap_ver1.0.md          Ver1.0開発計画
+│   │
+│   └── specifications/　　　　分析仕様書を管理するフォルダ
+│       ├── entry_signal_spec.md       エントリーシグナル判定仕様
+│       ├── support_resistance_spec.md 支持線・抵抗線判定仕様
+│       ├── exit_rule_spec.md          利確・損切判定仕様
+│       ├── entry_score_spec.md        スコアリング仕様
+│       └── market_filter_spec.md      市場トレンドフィルター検証記録（不採用）
 │
 ├── indicators/　　　　テクニカル指標を計算するフォルダ
-│   └── テクニカル指標計算（移動平均・RSI・MACD等）
+│   ├── moving_average.py          移動平均線（MA5/20/60/300）
+│   ├── volume.py                  出来高平均・出来高倍率
+│   └── resample.py                日足→週足/月足リサンプル
 │
 ├── logs/　　　　ログを管理するフォルダ（実行履歴やエラー履歴などを保存）
 │   ├── app.log                    アプリログ
@@ -86,10 +97,14 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │   └── logger.py                  ログ出力管理
 │
 ├── rules/    売買ルールを管理するフォルダ
-│   └── 売買ルール判定
+│   ├── entry_rule.py               エントリー判定（見送り理由も含む）
+│   ├── exit_rule.py                 利確・損切価格、リスクリワード比
+│   ├── holding_rule.py              保有期間の見直し警告
+│   ├── bounce_count.py              反発回数のカウント
+│   └── screening_filters.py         出来高・株価フィルタ
 │
 ├── scoring/    スコアリングを管理するフォルダ（各ルールの結果を点数化）
-│   └── スコアリング処理
+│   └── entry_score.py               MA/出来高/リスクスコア（100点満点）
 │
 ├── scripts/    実行用スクリプトを管理するフォルダ
 │   ├── create_stock_master.py     銘柄マスタを新規作成
@@ -101,10 +116,15 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │   └── update_stock_master.py     銘柄マスタを更新
 │
 ├── service/    サービス層を管理するフォルダ
-│   └── stock_service.py           システム全体から利用するサービス層
+│   ├── stock_service.py           株価データ一括取得
+│   └── screening_service.py       今日の売買候補抽出（UIから利用）
+│
+├── ui/    画面表示を管理するフォルダ
+│   └── dashboard.py                Streamlitダッシュボード（`streamlit run ui/dashboard.py`で起動）
 │
 ├── tests/    テストコードを管理するフォルダ
-│   └── テストコード
+│   ├── manual/                    DB・外部APIに依存する手動確認スクリプト
+│   └── test_*.py                  pytestによる自動テスト
 │
 ├── .env                           APIキー等の環境変数
 ├── .gitignore                     Git管理対象外設定
