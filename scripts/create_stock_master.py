@@ -15,7 +15,7 @@ def main():
 
     manager = ProviderManager()
 
-    df, provider = manager.get_stock_list()
+    provider, df = manager.get_stock_list()
 
     if df.empty:
 
@@ -47,6 +47,12 @@ def main():
 
         size_class = row["ScaleCat"]
 
+        market_cap = (
+            row["MarketCap"]
+            if "MarketCap" in df.columns
+            else None
+        )
+
         stock_list.append(
             (
                 code,
@@ -56,6 +62,7 @@ def main():
                 jpx400,
                 nikkei225,
                 size_class,
+                market_cap,
             )
         )
 

@@ -299,6 +299,12 @@ stock_prices
 東証プライム銘柄（1,559銘柄）に絞る方針（ユーザー確認済み、大型株中心でトレードするため）。
 データ取得・保存自体はプライム/スタンダード/グロースの3市場を引き続き対象とする。
 
+※ 株価・銘柄一覧の取得元をIRBANK APIへ移行（2026-08-09、ユーザー確認済み）。
+ProviderManagerの優先順位はIRBANK → J-Quants → Yahooとし、IRBANKが利用不可の場合のみ
+フォールバックする。IRBANKの銘柄一覧APIはTOPIX Core30/Large70の規模区分を提供しないため、
+「大型株」の定義をsize_classラベルから時価総額しきい値（config.LARGE_CAP_MARKET_CAP_THRESHOLD、
+既定5,000億円、IRBANKの/screeningから取得）へ変更した。
+
 除外
 
 ETF

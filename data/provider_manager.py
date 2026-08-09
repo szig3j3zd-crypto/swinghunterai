@@ -2,6 +2,7 @@ import pandas as pd
 
 from data.providers.yahoo_provider import YahooProvider
 from data.providers.jquants_provider import JQuantsProvider
+from data.providers.irbank_provider import IRBankProvider
 
 
 class ProviderManager:
@@ -12,8 +13,9 @@ class ProviderManager:
     def __init__(self):
 
         self.providers = [
-            YahooProvider(),
+            IRBankProvider(),
             JQuantsProvider(),
+            YahooProvider(),
         ]
 
     def get_stock_data(

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from database.stock_master_repository import add_stocks
+from database.stock_master_repository import update_classification
 
 NIKKEI225_PATH = "data/stock_data/master/nikkei225.csv"
 
@@ -163,15 +163,15 @@ def main():
             )
         )
 
-    print("登録開始...")
+    print("更新開始...")
     print()
 
-    add_stocks(
+    update_classification(
         stocks
     )
 
     print(
-        f"登録完了 : {len(stocks)}件"
+        f"更新完了 : {len(stocks)}件"
     )
 
     print("=" * 40)

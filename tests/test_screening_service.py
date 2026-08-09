@@ -1,5 +1,6 @@
 import pandas as pd
 
+from config.config import LARGE_CAP_MARKET_CAP_THRESHOLD
 from database.stock_master_reader import get_active_stocks
 from service.screening_service import (
     evaluate_single_stock,
@@ -11,13 +12,11 @@ from service.screening_service import (
 )
 
 
-def test_get_large_cap_stocks_returns_core30_and_large70_only():
+def test_get_large_cap_stocks_returns_stocks_above_threshold_only():
     stocks = get_large_cap_stocks()
 
     assert len(stocks) > 0
-    assert set(stocks["size_class"].unique()).issubset(
-        {"TOPIX Core30", "TOPIX Large70"}
-    )
+    assert (stocks["market_cap"] >= LARGE_CAP_MARKET_CAP_THRESHOLD).all()
 
 
 def test_get_prime_stocks_returns_prime_market_only():

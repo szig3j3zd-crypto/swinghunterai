@@ -35,6 +35,11 @@ MAX_PRICE = 5000
 MIN_MARKET_CAP = 500_000_000_000  # 5000億円
 MAX_MARKET_CAP = None
 
+# 大型株ユニバースのしきい値（円）
+# IRBANKの銘柄一覧にはTOPIX Core30/Large70の規模区分が無いため、
+# 時価総額でその代替とする（stock_master.market_cap基準）
+LARGE_CAP_MARKET_CAP_THRESHOLD = 500_000_000_000  # 5000億円
+
 # 支持線・抵抗線の検出期間（日数ベース）
 SUPPORT_RESISTANCE_LOOKBACK = {
     "daily": 252,       # 直近1年（営業日ベース）

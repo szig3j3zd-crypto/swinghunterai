@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 from analysis.support_resistance import detect_resistance_lines, detect_support_lines
+from config.config import LARGE_CAP_MARKET_CAP_THRESHOLD
 from data.market_cap_reader import get_market_cap
 from database.stock_master_reader import get_active_stocks
 from database.stock_price_reader import get_stock_data
@@ -16,12 +17,15 @@ MARKET_CAP_FETCH_WORKERS = 8
 def get_large_cap_stocks():
 
     """
-    大型株（TOPIX Core30 + Large70）の銘柄一覧を取得する
+    大型株（時価総額がLARGE_CAP_MARKET_CAP_THRESHOLD以上）の銘柄一覧を取得する
+
+    IRBANKの銘柄一覧にTOPIX Core30/Large70の規模区分が無いため、
+    stock_master.market_cap（IRBANKの/screeningから取得）で代替する
     """
 
     stocks = get_active_stocks()
 
-    return stocks[stocks["size_class"].isin(["TOPIX Core30", "TOPIX Large70"])]
+    return stocks[stocks["market_cap"] >= LARGE_CAP_MARKET_CAP_THRESHOLD]
 
 
 def get_nikkei225_stocks():
