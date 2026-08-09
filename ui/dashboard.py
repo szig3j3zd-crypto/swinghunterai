@@ -33,7 +33,12 @@ from service.screening_service import (
     get_today_candidates,
 )
 from service.trade_service import calculate_pnl, group_by_year_and_month, total_pnl
-from ui.chart import PLOTLY_CONFIG, build_price_chart, compute_visible_window
+from ui.chart import (
+    PLOTLY_CONFIG,
+    PLOTLY_CURSOR_OVERRIDE_CSS,
+    build_price_chart,
+    compute_visible_window,
+)
 
 UNIVERSE_OPTIONS = {
     "東証プライム全体": get_prime_stocks,
@@ -318,6 +323,7 @@ def _render_focus_block(label, result, code, chart_timeframe):
 
 
 st.set_page_config(page_title="株探し", layout="wide")
+st.markdown(PLOTLY_CURSOR_OVERRIDE_CSS, unsafe_allow_html=True)
 
 st.title("株探し")
 

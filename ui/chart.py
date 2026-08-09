@@ -1,3 +1,4 @@
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -63,6 +64,20 @@ PLOTLY_CONFIG = {
     "locales": PLOTLY_JA_LOCALE,
 }
 
+# dragmode="zoom"のとき、Plotlyはチャート上のマウスカーソルを標準で十字（crosshair）
+# に変える。矢印のままにしたいという要望のため、CSSでカーソル形状を上書きする。
+# ドラッグでのズーム機能自体はdragmodeの設定のままなので変わらない。
+# st.markdown(PLOTLY_CURSOR_OVERRIDE_CSS, unsafe_allow_html=True) をアプリ起動時に
+# 一度呼び出せば、ページ内の全Plotlyチャートに適用される
+PLOTLY_CURSOR_OVERRIDE_CSS = """
+<style>
+.js-plotly-plot .nsewdrag,
+.js-plotly-plot .cursor-crosshair {
+    cursor: default !important;
+}
+</style>
+"""
+
 
 def compute_visible_window(df, start_date, end_date):
 
@@ -100,6 +115,55 @@ def compute_visible_window(df, start_date, end_date):
     volume_range = [0, window["volume"].max() * (1 + Y_AXIS_PADDING_RATIO)]
 
     return [start_date, end_date], y_range, volume_range
+
+
+def _compute_date_rangebreaks(df):
+
+    """
+    土日・祝日など、データが存在しない日をチャートのx軸から除外するための
+    rangebreaksを計算する。株式市場の休業日カレンダーを別途持たなくても、
+    df内の実際のデータ日を基準に「その間に存在するはずなのに無い日」を
+    差分で求めれば同じ結果になる（週足の場合も同様に、実データの無い日が
+    まとめて詰められるため、週足の点同士が均等な間隔で並ぶ）
+    """
+
+    existing_dates = pd.to_datetime(df["date"]).dt.normalize()
+    all_days = pd.date_range(existing_dates.min(), existing_dates.max(), freq="D")
+    missing_days = all_days.difference(existing_dates)
+
+    return [dict(values=missing_days)]
+
+
+def _format_or_dash(value, fmt):
+
+    return format(value, fmt) if pd.notna(value) else "-"
+
+
+def _build_hover_text(df, visible_ma, show_volume):
+
+    """
+    ローソク足トレース1本にまとめるホバー表示用テキストを行ごとに作る。
+    高値・安値・始値・終値・（表示中の）移動平均線・出来高の順で日本語ラベルを付ける。
+    移動平均線はチェックボックスで非表示にしているものはホバーにも出さない
+    （画面に無い情報が出てくると混乱するため、表示状態と揃える）
+    """
+
+    lines = []
+    for _, row in df.iterrows():
+        parts = [
+            row["date"].strftime("%Y/%m/%d"),
+            f"高値: {row['high']:,.1f}",
+            f"安値: {row['low']:,.1f}",
+            f"始値: {row['open']:,.1f}",
+            f"終値: {row['close']:,.1f}",
+        ]
+        for key in visible_ma:
+            parts.append(f"{MA_LABELS[key]}: {_format_or_dash(row[key], ',.2f')}")
+        if show_volume:
+            parts.append(f"出来高: {row['volume']:,.0f}")
+        lines.append("<br>".join(parts))
+
+    return lines
 
 
 def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True,
@@ -167,6 +231,10 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
         vertical_spacing=0.03,
     )
 
+    # ホバー表示は個々のトレースには持たせず、常に存在する透明な補助トレース
+    # （下で追加）1本にまとめる。ローソク足の表示・非表示に関わらず
+    # 高値・安値・始値・終値・移動平均線・出来高を一つのボックスで、
+    # 日本語ラベル・指定した順序で表示するため
     if show_candlestick:
         fig.add_trace(
             go.Candlestick(
@@ -180,6 +248,7 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
                 increasing_fillcolor=CANDLE_UP_COLOR,
                 decreasing_fillcolor=CANDLE_DOWN_COLOR,
                 name="株価",
+                hoverinfo="skip",
             ),
             row=1,
             col=1,
@@ -193,6 +262,7 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
                 mode="lines",
                 line=dict(color=MA_COLORS[key], width=1.5),
                 name=MA_LABELS[key],
+                hoverinfo="skip",
             ),
             row=1,
             col=1,
@@ -206,26 +276,44 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
                 marker_color=VOLUME_COLOR,
                 name="出来高",
                 showlegend=False,
+                hoverinfo="skip",
             ),
             row=2,
             col=1,
         )
 
-        # 出来高は別サブプロット（別軸）のため、価格側の統一ホバー表示には
-        # 自然には含まれない。価格側（row=1）に透明な補助トレースを重ねて
-        # 出来高の値をホバーに含める
+    # 高値・安値・始値・終値・（表示中の）移動平均線・出来高をひとつのボックスに
+    # まとめてホバー表示するための透明な補助トレース。ローソク足の表示状態に
+    # 関わらず常に追加する。row=1・row=2どちらにカーソルを合わせても同じ内容が
+    # 出るよう、サブプロットごとに（別軸のため）同じ内容のトレースを重ねて置く
+    hover_text = _build_hover_text(df, visible_ma, show_volume)
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["high"],
+            mode="lines",
+            line=dict(width=0),
+            hovertext=hover_text,
+            hovertemplate="%{hovertext}<extra></extra>",
+            showlegend=False,
+            name="",
+        ),
+        row=1,
+        col=1,
+    )
+    if show_volume:
         fig.add_trace(
             go.Scatter(
                 x=df["date"],
-                y=df["high"],
+                y=df["volume"],
                 mode="lines",
                 line=dict(width=0),
-                customdata=df["volume"],
-                hovertemplate="出来高: %{customdata:,}<extra></extra>",
+                hovertext=hover_text,
+                hovertemplate="%{hovertext}<extra></extra>",
                 showlegend=False,
-                name="出来高",
+                name="",
             ),
-            row=1,
+            row=2,
             col=1,
         )
 
@@ -235,16 +323,26 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         xaxis_rangeslider_visible=False,
         dragmode="zoom",
-        hovermode="x unified" if show_hover_info else False,
-        # 出来高サブプロットは価格と別軸のため、指定しないと出来高がホバー表示に
-        # 含まれない。"axis"にすることで、同じx位置の全サブプロットの値を
-        # 1つのホバー表示にまとめる
-        hoversubplots="axis",
+        # "closest"はカーソルとの2次元（x・y）距離が最も近い点を拾うため、
+        # カーソルがトレースの線から縦に離れた位置にあると、縦の点線
+        # （spikesnap="cursor"でカーソルのx座標そのものに追従）とは
+        # 別のx（たまたま2次元距離が近いだけの点）の情報を表示してしまう。
+        # "x"はx座標のみで最も近い点を拾うため、点線の位置と表示内容が
+        # 常に一致する
+        hovermode="x" if show_hover_info else False,
+        # 既定では隣接データ点までの距離（hoverdistance=20px）を超えると
+        # 何も拾わなくなる。表示期間によっては点の間隔が20pxを超えることも
+        # あるため、距離制限を外して常に最寄りのxのデータを拾えるようにする
+        hoverdistance=-1,
         uirevision=uirevision,
     )
 
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor=GRID_COLOR, zeroline=False)
+
+    # 土日・祝日など、データの無い日をx軸から除外し、ローソク足の間隔を
+    # 詰めて連続して見えるようにする
+    fig.update_xaxes(rangebreaks=_compute_date_rangebreaks(df))
 
     # 出来高チャート下の日付ラベル・ホバー表示の日付を日本式（年/月、月/日）に統一する。
     # 既定は"Mar 2026"のような英語表記になるため変更する。Plotly側の自動目盛間隔
