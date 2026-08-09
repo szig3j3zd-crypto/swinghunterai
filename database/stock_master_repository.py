@@ -1,3 +1,5 @@
+import sqlite3
+
 from database.db import create_connection
 
 
@@ -26,6 +28,8 @@ def create_table():
 
             jpx400 INTEGER DEFAULT 0,
 
+            nikkei225 INTEGER DEFAULT 0,
+
             size_class TEXT,
 
             active INTEGER DEFAULT 1
@@ -33,6 +37,15 @@ def create_table():
         )
         """
     )
+
+    # 既存DB（nikkei225列がまだ無いテーブル）への追加マイグレーション。
+    # 列が既にあればOperationalErrorになるので無視する
+    try:
+        cursor.execute(
+            "ALTER TABLE stock_master ADD COLUMN nikkei225 INTEGER DEFAULT 0"
+        )
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -44,6 +57,7 @@ def add_stock(
     company_name,
     market,
     jpx400,
+    nikkei225,
     size_class
 ):
     """
@@ -63,10 +77,11 @@ def add_stock(
             company_name,
             market,
             jpx400,
+            nikkei225,
             size_class,
             active
         )
-        VALUES (?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
         """,
         (
             code,
@@ -74,6 +89,7 @@ def add_stock(
             company_name,
             market,
             jpx400,
+            nikkei225,
             size_class
         )
     )
@@ -100,10 +116,11 @@ def add_stocks(stock_list):
             company_name,
             market,
             jpx400,
+            nikkei225,
             size_class,
             active
         )
-        VALUES (?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
         """,
         stock_list
     )
@@ -129,6 +146,7 @@ def get_all():
             company_name,
             market,
             jpx400,
+            nikkei225,
             size_class,
             active
         FROM stock_master
@@ -160,6 +178,7 @@ def get_by_code(code):
             company_name,
             market,
             jpx400,
+            nikkei225,
             size_class,
             active
         FROM stock_master

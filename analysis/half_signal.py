@@ -9,7 +9,7 @@ def detect_half_signal(df, direction, support_price=None, resistance_price=None)
     docs/specifications/entry_signal_spec.md 4章に対応する。
 
     パターンA: 支持線/抵抗線付近での半分シグナル
-    パターンB: 20日線付近での半分シグナル（優先度高）
+    パターンB: 5日線・20日線のゴールデンクロス／デッドクロス（優先度高）
 
     Parameters
     ----------
@@ -32,13 +32,11 @@ def detect_half_signal(df, direction, support_price=None, resistance_price=None)
     """
 
     if direction == "long":
-        crossed = _crossed_above_sma5(df)
-
-        pattern_b = crossed & (df["close"] > df["sma20"])
+        pattern_b = _crossed_sma5_above_sma20(df)
 
         if support_price is not None:
             pattern_a = (
-                crossed
+                _crossed_above_sma5(df)
                 & (df["close"] > support_price)
                 & (df["close"] > df["sma60"])
             )
@@ -46,13 +44,11 @@ def detect_half_signal(df, direction, support_price=None, resistance_price=None)
             pattern_a = pd.Series(False, index=df.index)
 
     elif direction == "short":
-        crossed = _crossed_below_sma5(df)
-
-        pattern_b = crossed & (df["close"] < df["sma20"])
+        pattern_b = _crossed_sma5_below_sma20(df)
 
         if resistance_price is not None:
             pattern_a = (
-                crossed
+                _crossed_below_sma5(df)
                 & (df["close"] < resistance_price)
                 & (df["close"] < df["sma60"])
             )
@@ -101,3 +97,21 @@ def _crossed_below_sma5(df):
     midpoint = _candle_body_midpoint(df)
 
     return (midpoint.shift(1) >= df["sma5"].shift(1)) & (midpoint < df["sma5"])
+
+
+def _crossed_sma5_above_sma20(df):
+
+    """
+    5日線が20日線を下から上に抜けた日（ゴールデンクロス）
+    """
+
+    return (df["sma5"].shift(1) <= df["sma20"].shift(1)) & (df["sma5"] > df["sma20"])
+
+
+def _crossed_sma5_below_sma20(df):
+
+    """
+    5日線が20日線を上から下に抜けた日（デッドクロス）
+    """
+
+    return (df["sma5"].shift(1) >= df["sma20"].shift(1)) & (df["sma5"] < df["sma20"])

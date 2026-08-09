@@ -1,4 +1,4 @@
-# SwingHunter AI コーディング規約
+# 株探し コーディング規約
 
 ---
 
@@ -454,7 +454,7 @@ from database.db import create_connection
 
 # 18. 開発方針
 
-SwingHunter AIはレイヤー構造を採用する。
+株探しはレイヤー構造を採用する。
 
 ```
 Data Layer

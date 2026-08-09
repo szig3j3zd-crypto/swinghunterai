@@ -1,4 +1,4 @@
-# SwingHunter AI システム構成（Data Layer Ver1.0）
+# 株探し システム構成（Data Layer Ver1.0）
 
 ---
 

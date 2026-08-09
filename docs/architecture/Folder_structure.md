@@ -47,6 +47,7 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │   ├── data_provider.py           データ取得共通処理
 │   ├── download_manager.py        株価取得管理
 │   ├── failed_download_manager.py 失敗銘柄管理
+│   ├── market_cap_reader.py       時価総額のライブ取得（Yahoo Finance、ダッシュボードの候補絞り込み専用）
 │   ├── provider_manager.py        Yahoo/J-Quants切替管理
 │   └── stock.db                   SQLiteデータベース
 │
@@ -56,7 +57,9 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │   ├── stock_master_reader.py         銘柄マスタ読込
 │   ├── stock_master_repository.py     銘柄マスタ登録・更新
 │   ├── stock_price_reader.py          株価読込
-│   └── stock_price_repository.py      株価保存
+│   ├── stock_price_repository.py      株価保存
+│   ├── trade_repository.py            売買銘柄（トレード記録）のCRUD
+│   └── watchlist_repository.py        監視銘柄のCRUD
 │
 ├── docs/　　　　システム設計書・開発資料を管理するフォルダ
 │   │
@@ -82,7 +85,8 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │       ├── support_resistance_spec.md 支持線・抵抗線判定仕様
 │       ├── exit_rule_spec.md          利確・損切判定仕様
 │       ├── entry_score_spec.md        スコアリング仕様
-│       └── market_filter_spec.md      市場トレンドフィルター検証記録（不採用）
+│       ├── market_filter_spec.md      市場トレンドフィルター検証記録（不採用）
+│       └── dashboard_spec.md          ダッシュボード（Streamlit UI）仕様
 │
 ├── indicators/　　　　テクニカル指標を計算するフォルダ
 │   ├── moving_average.py          移動平均線（MA5/20/60/300）
@@ -117,10 +121,12 @@ SWINGHUNTERAI/    システム全体を管理するフォルダ
 │
 ├── service/    サービス層を管理するフォルダ
 │   ├── stock_service.py           株価データ一括取得
-│   └── screening_service.py       今日の売買候補抽出（UIから利用）
+│   ├── screening_service.py       今日の売買候補抽出・個別銘柄評価・チャート用データ取得（UIから利用）
+│   └── trade_service.py           売買銘柄の損益計算・年月グルーピング（UIから利用）
 │
 ├── ui/    画面表示を管理するフォルダ
-│   └── dashboard.py                Streamlitダッシュボード（`streamlit run ui/dashboard.py`で起動）
+│   ├── dashboard.py                Streamlitダッシュボード（`streamlit run ui/dashboard.py`で起動）
+│   └── chart.py                    株価チャート生成（Plotly、ローソク足・移動平均線・出来高）
 │
 ├── tests/    テストコードを管理するフォルダ
 │   ├── manual/                    DB・外部APIに依存する手動確認スクリプト

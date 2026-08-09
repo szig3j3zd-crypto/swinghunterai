@@ -1,6 +1,10 @@
+from pathlib import Path
+
 import pandas as pd
 
 from database.stock_master_repository import add_stocks
+
+NIKKEI225_PATH = "data/stock_data/master/nikkei225.csv"
 
 
 def main():
@@ -25,6 +29,33 @@ def main():
     )
 
     print(f"東証上場銘柄読込 : {len(prime_df)}件")
+    print()
+
+    # 日経225一覧（任意。無ければ全銘柄nikkei225=0のまま更新する）
+    # ヘッダー無し・1列（コードのみ）のCSVを想定
+    if Path(NIKKEI225_PATH).exists():
+
+        nikkei225_df = pd.read_csv(
+            NIKKEI225_PATH,
+            encoding="cp932",
+            header=None
+        )
+
+        nikkei225_codes = set(
+            nikkei225_df[0].astype(str).str.strip()
+        )
+
+        print(f"日経225読込 : {len(nikkei225_codes)}件")
+
+    else:
+
+        nikkei225_codes = set()
+
+        print(
+            f"日経225一覧が見つかりません（{NIKKEI225_PATH}）。"
+            "nikkei225は全銘柄0のまま更新します"
+        )
+
     print()
 
     # ==========================
@@ -114,6 +145,12 @@ def main():
             else 0
         )
 
+        nikkei225 = (
+            1
+            if code in nikkei225_codes
+            else 0
+        )
+
         stocks.append(
             (
                 code,
@@ -121,6 +158,7 @@ def main():
                 company_name,
                 market,
                 jpx400,
+                nikkei225,
                 size_class
             )
         )

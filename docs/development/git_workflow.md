@@ -1,4 +1,4 @@
-# SwingHunter AI 開発ルール（Git運用）
+# 株探し 開発ルール（Git運用）
 
 ---
 
@@ -80,7 +80,7 @@ Fix duplicate stock price issue
 
 # 5. バージョン管理方針
 
-SwingHunter AIではフェーズ単位・バージョン単位で管理する。
+株探しではフェーズ単位・バージョン単位で管理する。
 
 | Version | 内容 |
 |---------|------|

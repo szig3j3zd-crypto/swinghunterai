@@ -43,6 +43,8 @@ def main():
 
         jpx400 = 0
 
+        nikkei225 = 0
+
         size_class = row["ScaleCat"]
 
         stock_list.append(
@@ -52,6 +54,7 @@ def main():
                 company_name,
                 market,
                 jpx400,
+                nikkei225,
                 size_class,
             )
         )

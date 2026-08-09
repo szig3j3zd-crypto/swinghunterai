@@ -1,8 +1,8 @@
 # プロジェクト名
-PROJECT_NAME = "SwingHunter AI"
+PROJECT_NAME = "株探し"
 
 # バージョン
-VERSION = "1.0"
+VERSION = "2.1"
 
 # 保存フォルダ
 DATA_DIR = "data"
@@ -28,11 +28,11 @@ VOLUME_AVG_WINDOW = 20
 MIN_VOLUME = 500_000
 
 # 株価フィルタ（Noneならフィルタなし）
-MIN_PRICE = None
-MAX_PRICE = None
+MIN_PRICE = 1000
+MAX_PRICE = 5000
 
-# 時価総額フィルタ（Noneならフィルタなし）
-MIN_MARKET_CAP = None
+# 時価総額フィルタ（Noneならフィルタなし。候補抽出後にYahoo Financeから取得して適用する）
+MIN_MARKET_CAP = 500_000_000_000  # 5000億円
 MAX_MARKET_CAP = None
 
 # 支持線・抵抗線の検出期間（日数ベース）

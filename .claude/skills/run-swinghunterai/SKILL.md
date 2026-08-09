@@ -1,6 +1,6 @@
 ---
 name: run-swinghunterai
-description: Launch, drive, and screenshot the SwingHunter AI Streamlit dashboard (today's buy/sell candidates); also covers running the data pipeline scripts and the backtest simulator. Use when asked to run, start, launch, test, or screenshot SwingHunter AI, or to verify a UI/rule-engine change actually works end to end.
+description: Launch, drive, and screenshot the 株探し Streamlit dashboard (today's buy/sell candidates); also covers running the data pipeline scripts and the backtest simulator. Use when asked to run, start, launch, test, or screenshot 株探し, or to verify a UI/rule-engine change actually works end to end.
 ---
 
 Paths below are relative to the repo root (this directory's great-grandparent,

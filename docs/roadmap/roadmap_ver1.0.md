@@ -1,7 +1,7 @@
-SwingHunter AI Ver1.0（Data Foundation）
+株探し Ver1.0（Data Foundation）
 概要
 
-Ver1.0では、SwingHunter AI の基盤となる Data Layer を構築した。
+Ver1.0では、株探し の基盤となる Data Layer を構築した。
 
 目的は、東証上場銘柄の情報と株価データを安定して取得・保存し、今後のテクニカル分析やAI分析で利用できるデータ基盤を完成させることである。
 

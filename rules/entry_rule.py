@@ -19,7 +19,8 @@ from scoring.entry_score import calculate_total_score
 
 
 def evaluate_entry(df, direction, support_lines=None, resistance_lines=None,
-                    bounce_merge_within=None):
+                    bounce_merge_within=None, min_volume=None, min_price=None,
+                    max_price=None):
 
     """
     直近日がエントリー候補かどうかを判定する
@@ -46,6 +47,9 @@ def evaluate_entry(df, direction, support_lines=None, resistance_lines=None,
         近接した反発をまとめる間隔（行数ベース）。Noneならconfig.BOUNCE_MERGE_WITHIN_DAYSを使う。
         日足は営業日、週足は週、月足は月を1行として数えるため、時間足に応じて指定する
 
+    min_volume, min_price, max_price
+        出来高・株価フィルタの上書き値。Noneならconfig既定値を使う
+
     Returns
     -------
     result
@@ -56,11 +60,11 @@ def evaluate_entry(df, direction, support_lines=None, resistance_lines=None,
     current_price = df["close"].iloc[-1]
     current_volume = df["volume"].iloc[-1]
 
-    if not passes_volume_filter(current_volume):
-        return _skip("volume_too_low")
+    if not passes_volume_filter(current_volume, min_volume=min_volume):
+        return _skip("volume_too_low", current_price, direction)
 
-    if not passes_price_filter(current_price):
-        return _skip("price_out_of_range")
+    if not passes_price_filter(current_price, min_price=min_price, max_price=max_price):
+        return _skip("price_out_of_range", current_price, direction)
 
     if direction == "long":
         trend = is_long_trend_series(df)
@@ -70,7 +74,7 @@ def evaluate_entry(df, direction, support_lines=None, resistance_lines=None,
         raise ValueError("direction must be 'long' or 'short'")
 
     if not bool(trend.iloc[-1]):
-        return _skip("not_in_trend")
+        return _skip("not_in_trend", current_price, direction)
 
     if direction == "long":
         line = nearest_line_below(support_lines or [], current_price)
@@ -89,27 +93,27 @@ def evaluate_entry(df, direction, support_lines=None, resistance_lines=None,
     )
 
     if not bool(signal["half_signal"].iloc[-1]):
-        return _skip("no_half_signal_today")
+        return _skip("no_half_signal_today", current_price, direction)
 
     pattern_today = signal["pattern"].iloc[-1]
 
     sma60_today = df["sma60"].iloc[-1]
 
     if direction == "long" and not (current_price > sma60_today):
-        return _skip("below_sma60")
+        return _skip("below_sma60", current_price, direction)
 
     if direction == "short" and not (current_price < sma60_today):
-        return _skip("above_sma60")
+        return _skip("above_sma60", current_price, direction)
 
     if pattern_today == "A":
         if line is None:
-            return _skip("pattern_a_without_valid_line")
+            return _skip("pattern_a_without_valid_line", current_price, direction)
         start_date = line["valid_since_date"]
     else:
         start_date = get_current_trend_period(df, direction=direction)
 
         if start_date is None:
-            return _skip("trend_period_not_found")
+            return _skip("trend_period_not_found", current_price, direction)
 
     pattern_signal = signal["pattern"] == pattern_today
     bounce_number = get_bounce_number(
@@ -119,7 +123,7 @@ def evaluate_entry(df, direction, support_lines=None, resistance_lines=None,
     today_bounce = bounce_number.iloc[-1]
 
     if pd.isna(today_bounce) or today_bounce > MAX_ENTRY_BOUNCES:
-        return _skip("bounce_limit_exceeded")
+        return _skip("bounce_limit_exceeded", current_price, direction)
 
     stop_loss_price = get_stop_loss_price(df, current_price, direction)
     take_profit_price = get_take_profit_price(df, current_price, direction)
@@ -143,13 +147,18 @@ def evaluate_entry(df, direction, support_lines=None, resistance_lines=None,
     }
 
 
-def _skip(reason):
+def _skip(reason, price=None, direction=None):
 
     """
     見送り結果の組み立て
+
+    price・directionは、候補ではない銘柄でも現在の株価を参照できるよう
+    （個別銘柄検索から売買銘柄/監視銘柄に登録する用途など）持たせておく
     """
 
     return {
         "is_entry_candidate": False,
         "reason": reason,
+        "price": price,
+        "direction": direction,
     }

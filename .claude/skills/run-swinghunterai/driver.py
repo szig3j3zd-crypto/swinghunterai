@@ -1,5 +1,5 @@
 """
-SwingHunter AI Streamlit dashboard driver.
+株探し Streamlit dashboard driver.
 
 Drives the running dashboard with a headless browser: opens it, selects a
 direction, clicks "候補を更新" (scan), waits for the scan to finish, and
@@ -31,7 +31,7 @@ def run(url, direction, out_path, timeout_s):
         )
 
         page.goto(url, wait_until="networkidle", timeout=30000)
-        page.wait_for_selector("text=SwingHunter AI", timeout=15000)
+        page.wait_for_selector("text=株探し", timeout=15000)
 
         if direction == "short":
             page.click("text=ショート（売り）")
