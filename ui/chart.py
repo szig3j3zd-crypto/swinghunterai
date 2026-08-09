@@ -104,7 +104,8 @@ def compute_visible_window(df, start_date, end_date):
 
 def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True,
                        x_range=None, y_range=None, volume_range=None,
-                       ohlc_text=None, uirevision=None):
+                       ohlc_text=None, uirevision=None, show_hover_info=True,
+                       tick_format="%Y/%m/%d"):
 
     """
     ローソク足・移動平均線・出来高のチャートを作る
@@ -138,6 +139,16 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
     uirevision
         この値が前回描画時と同じなら、ユーザーが手動でズーム/パンした状態を
         維持する（表示期間・銘柄を変えたときだけ値を変えてリセットさせる）
+
+    show_hover_info
+        カーソルを合わせたときの株価・出来高の詳細情報ボックスを表示するか。
+        Falseにするとホバー自体を無効化する（縦の点線もホバー起点のため
+        同時に非表示になる）
+
+    tick_format
+        出来高チャート下の日付軸ラベルのd3-time-format文字列。表示期間が
+        短い（日単位で見たい）場合は"%m/%d"、長い場合は"%Y/%m"など、
+        呼び出し側（表示期間の選択）に応じて渡す
 
     Returns
     -------
@@ -200,18 +211,57 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
             col=1,
         )
 
+        # 出来高は別サブプロット（別軸）のため、価格側の統一ホバー表示には
+        # 自然には含まれない。価格側（row=1）に透明な補助トレースを重ねて
+        # 出来高の値をホバーに含める
+        fig.add_trace(
+            go.Scatter(
+                x=df["date"],
+                y=df["high"],
+                mode="lines",
+                line=dict(width=0),
+                customdata=df["volume"],
+                hovertemplate="出来高: %{customdata:,}<extra></extra>",
+                showlegend=False,
+                name="出来高",
+            ),
+            row=1,
+            col=1,
+        )
+
     fig.update_layout(
         height=680 if show_volume else 500,
         margin=dict(l=40, r=20, t=10, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         xaxis_rangeslider_visible=False,
         dragmode="zoom",
-        hovermode="x unified",
+        hovermode="x unified" if show_hover_info else False,
+        # 出来高サブプロットは価格と別軸のため、指定しないと出来高がホバー表示に
+        # 含まれない。"axis"にすることで、同じx位置の全サブプロットの値を
+        # 1つのホバー表示にまとめる
+        hoversubplots="axis",
         uirevision=uirevision,
     )
 
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor=GRID_COLOR, zeroline=False)
+
+    # 出来高チャート下の日付ラベル・ホバー表示の日付を日本式（年/月、月/日）に統一する。
+    # 既定は"Mar 2026"のような英語表記になるため変更する。Plotly側の自動目盛間隔
+    # （dtickrange）は狙った境界に一致しないことがあり不安定なため、呼び出し側
+    # （選択された表示期間）から明示的に受け取ったtick_formatをそのまま使う
+    fig.update_xaxes(tickformat=tick_format)
+    fig.update_xaxes(hoverformat="%Y/%m/%d")
+
+    # 縦の点線（スパイクライン）を出来高サブプロットまで伸ばす
+    fig.update_xaxes(
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikedash="dot",
+        spikethickness=1,
+        spikecolor="rgba(100, 100, 100, 0.5)",
+    )
 
     # shared_xaxesでも各サブプロットのrangeは個別に指定する必要があるため、
     # 全x軸（row指定なし）に同じrangeを適用する

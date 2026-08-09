@@ -61,6 +61,10 @@ CHART_PERIOD_OPTIONS = ["1ヶ月", "3ヶ月", "6ヶ月"] + [f"{n}年" for n in r
 # 時間足ごとのデフォルト表示期間（日足は直近半年、週足は直近3年が読み取りやすいため）
 CHART_PERIOD_DEFAULT = {"daily": "6ヶ月", "weekly": "3年"}
 
+# 日単位で見たい短い表示期間では「月/日」、それより長い期間では「年/月」で
+# 出来高チャート下の日付軸ラベルを表示する
+CHART_TICK_FORMAT_SHORT_PERIODS = {"1ヶ月", "3ヶ月"}
+
 
 def _period_label_to_offset(label):
 
@@ -150,6 +154,38 @@ def _on_candidate_table_select(table_key, candidates_list):
         st.session_state["focus_candidate"] = candidates_list[selection[0]]
 
 
+
+# チャートの表示切替チェックボックスの既定値。「候補を更新」直後など、
+# このブロック自体が一度も描画されないスクリプト実行を挟むと、
+# st.checkbox側のkeyに紐づくセッション状態はStreamlitによって破棄される
+# （非表示のウィジェットの状態はrunをまたいで残らない仕様のため）。
+# そのため、ウィジェット自身のkeyには頼らず、ここで管理する独立した
+# session_stateの値を毎回value=に渡して手動で維持する
+CHART_DISPLAY_PREF_DEFAULTS = {
+    "chart_pref_show_candlestick": True,
+    "chart_pref_show_sma5": True,
+    "chart_pref_show_sma20": True,
+    "chart_pref_show_sma60": True,
+    "chart_pref_show_volume": True,
+    "chart_pref_show_hover_info": True,
+}
+
+
+def _persistent_checkbox(label, pref_key):
+
+    """
+    「候補を更新」やフォーカス対象の切り替えを挟んでも状態が消えない
+    チェックボックス。st.checkbox()自体は毎回新規生成されるが、
+    表示するvalue/変更後の値はpref_key下のsession_stateで独自に管理する
+    """
+
+    value = st.checkbox(
+        label, value=st.session_state.get(pref_key, CHART_DISPLAY_PREF_DEFAULTS[pref_key])
+    )
+    st.session_state[pref_key] = value
+    return value
+
+
 def _render_focus_block(label, result, code, chart_timeframe):
 
     """
@@ -188,28 +224,36 @@ def _render_focus_block(label, result, code, chart_timeframe):
     # できるだけ隙間を詰めて左に寄せる
     # vertical_alignment="bottom"で、ラベル行が無いチェックボックスを
     # 表示期間のセレクトボックス（ラベル+入力欄）の入力欄の高さに揃える
-    period_col, cb_candle, cb_sma5, cb_sma20, cb_sma60, cb_volume, _spacer = (
+    period_col, cb_candle, cb_sma5, cb_sma20, cb_sma60, cb_volume, cb_hover, _spacer = (
         st.columns(
-            [1.3, 1.5, 1, 1, 1, 1, 4], gap="xxsmall", vertical_alignment="bottom"
+            [1.3, 1.5, 1, 1, 1, 1, 1.5, 4], gap="xxsmall", vertical_alignment="bottom"
         )
     )
+    # 表示期間も同様に、ウィジェット自身のkeyだけでなく独立したsession_stateで
+    # 現在値を管理し、このブロックが描画されないrunを挟んでも維持する
+    period_pref_key = f"chart_period_pref_{chart_timeframe}"
     with period_col:
         period_label = st.selectbox(
             "表示期間",
             options=CHART_PERIOD_OPTIONS,
-            index=CHART_PERIOD_OPTIONS.index(CHART_PERIOD_DEFAULT[chart_timeframe]),
+            index=CHART_PERIOD_OPTIONS.index(
+                st.session_state.get(period_pref_key, CHART_PERIOD_DEFAULT[chart_timeframe])
+            ),
             key=f"chart_period_select_{chart_timeframe}",
         )
+    st.session_state[period_pref_key] = period_label
     with cb_candle:
-        show_candlestick = st.checkbox("ローソク足", value=True)
+        show_candlestick = _persistent_checkbox("ローソク足", "chart_pref_show_candlestick")
     with cb_sma5:
-        show_sma5 = st.checkbox("5日線", value=True)
+        show_sma5 = _persistent_checkbox("5日線", "chart_pref_show_sma5")
     with cb_sma20:
-        show_sma20 = st.checkbox("20日線", value=True)
+        show_sma20 = _persistent_checkbox("20日線", "chart_pref_show_sma20")
     with cb_sma60:
-        show_sma60 = st.checkbox("60日線", value=True)
+        show_sma60 = _persistent_checkbox("60日線", "chart_pref_show_sma60")
     with cb_volume:
-        show_volume = st.checkbox("出来高", value=True)
+        show_volume = _persistent_checkbox("出来高", "chart_pref_show_volume")
+    with cb_hover:
+        show_hover_info = _persistent_checkbox("詳細情報", "chart_pref_show_hover_info")
 
     # 高値・安値・始値・終値は、Streamlit要素としてではなく、
     # チャート凡例の右横（同じ行）に来るようPlotly側の注釈として埋め込む
@@ -246,6 +290,12 @@ def _render_focus_block(label, result, code, chart_timeframe):
             y_range=y_range,
             volume_range=volume_range,
             ohlc_text=ohlc_text,
+            show_hover_info=show_hover_info,
+            tick_format=(
+                "%m/%d"
+                if period_label in CHART_TICK_FORMAT_SHORT_PERIODS
+                else "%Y/%m"
+            ),
             # uirevisionとkey（下）はPlotlyの標準的な「ズーム状態を維持する」
             # 手法だが、st.plotly_chartでは効かず、チェックボックス操作等の
             # 再読み込みのたびにズームがリセットされる（Streamlit側の制限）。
