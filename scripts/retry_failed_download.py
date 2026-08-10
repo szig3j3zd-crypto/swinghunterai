@@ -1,4 +1,10 @@
+import sys
 import time
+from pathlib import Path
+
+# python scripts/xxx.py で直接実行した場合、sys.path[0]はscripts/自身になり
+# プロジェクトルートが見えないため、絶対importが解決できるよう明示的に追加する
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from database.stock_price_reader import get_latest_date
 from database.stock_price_repository import save_stock_data

@@ -1,4 +1,9 @@
+import sys
 from pathlib import Path
+
+# python scripts/xxx.py で直接実行した場合、sys.path[0]はscripts/自身になり
+# プロジェクトルートが見えないため、絶対importが解決できるよう明示的に追加する
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
