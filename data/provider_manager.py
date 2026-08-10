@@ -12,7 +12,14 @@ class ProviderManager:
 
     def __init__(self):
 
-        self.providers = [
+        # 株価取得: IRBANKは1日の取得容量が小さく全銘柄更新に耐えないため使わない
+        self.price_providers = [
+            YahooProvider(),
+            JQuantsProvider(),
+        ]
+
+        # 銘柄一覧・企業情報取得: IRBANKを優先する
+        self.list_providers = [
             IRBankProvider(),
             JQuantsProvider(),
             YahooProvider(),
@@ -28,7 +35,7 @@ class ProviderManager:
         株価取得
         """
 
-        for provider in self.providers:
+        for provider in self.price_providers:
 
             if not provider.is_available():
                 continue
@@ -61,7 +68,7 @@ class ProviderManager:
         銘柄一覧取得
         """
 
-        for provider in self.providers:
+        for provider in self.list_providers:
 
             if not provider.is_available():
                 continue
