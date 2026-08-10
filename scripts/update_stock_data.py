@@ -16,9 +16,13 @@ from logs.logger import save_download_history
 # 設定
 # =====================================
 
-REQUEST_SLEEP = 0.3      # 1銘柄待機
-BATCH_SIZE = 200         # 200銘柄ごと
-BATCH_SLEEP = 20         # 20秒待機
+
+# IRBANK APIのレート制限（同一アカウント合算で60リクエスト/分、超過は429）に
+# 収まるよう、1銘柄1リクエスト前提で60/60=1.0秒に安全マージンを乗せた値にする。
+# 継続的にこの間隔を守れば429は原理的に発生しないため、旧仕様にあった
+# 200銘柄ごとの追加待機（BATCH_SLEEP）は不要になり廃止した
+REQUEST_SLEEP = 1.1      # 1銘柄待機
+BATCH_SIZE = 200         # 200銘柄ごとに進捗表示のみ行う
 
 manager = DownloadManager()
 
@@ -191,10 +195,7 @@ def main():
 
             print("=" * 40)
             print(f"{index}銘柄完了 / {total}")
-            print(f"{BATCH_SLEEP}秒待機...")
             print("=" * 40)
-
-            time.sleep(BATCH_SLEEP)
 
     if failed_list:
 
