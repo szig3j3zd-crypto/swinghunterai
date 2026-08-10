@@ -14,14 +14,17 @@ from config.config import MAX_PRICE, MIN_MARKET_CAP, MIN_PRICE, MIN_VOLUME
 from database.stock_master_reader import get_active_stocks
 from database.trade_repository import (
     add_trade,
+    create_table as create_trades_table,
     delete_trade,
     get_all_trades,
     update_trade,
 )
 from database.watchlist_repository import (
     add_watchlist_stock,
+    create_table as create_watchlist_table,
     delete_watchlist_stock,
     get_all_watchlist_stocks,
+    update_watchlist_timeframe,
 )
 from service.screening_service import (
     evaluate_single_stock,
@@ -59,6 +62,8 @@ SKIP_REASON_LABELS = {
 }
 
 DIRECTION_LABELS = {"long": "ロング（買い）", "short": "ショート（売り）"}
+TIMEFRAME_LABELS = {"daily": "日足", "weekly": "週足"}
+TIMEFRAME_LABELS_INVERSE = {v: k for k, v in TIMEFRAME_LABELS.items()}
 
 # チャートの表示期間の選択肢。「n年」は1〜10年を1年刻み
 CHART_PERIOD_OPTIONS = ["1ヶ月", "3ヶ月", "6ヶ月"] + [f"{n}年" for n in range(1, 11)]
@@ -322,6 +327,11 @@ def _render_focus_block(label, result, code, chart_timeframe):
     )
 
 
+# CREATE TABLE IF NOT EXISTS・列追加マイグレーションとも冪等なため、
+# 起動のたびに呼んでも問題ない
+create_trades_table()
+create_watchlist_table()
+
 st.set_page_config(page_title="株探し", layout="wide")
 st.markdown(PLOTLY_CURSOR_OVERRIDE_CSS, unsafe_allow_html=True)
 
@@ -533,12 +543,16 @@ with tab_scan:
             key="add_target_select",
         )
         add_candidate = add_options[add_label]
+        add_timeframe_label = (
+            "日足" if add_candidate["timeframe"] == "daily" else "週足"
+        )
 
         col_trade, col_watch = st.columns(2)
 
         with col_trade:
             with st.form("add_trade_form"):
                 st.write("売買銘柄として追加")
+                st.caption(f"時間足: {add_timeframe_label}")
 
                 trade_date_input = st.date_input("取引日", value=date.today())
                 entry_price_input = st.number_input(
@@ -558,6 +572,7 @@ with tab_scan:
                         code=add_candidate["code"],
                         company_name=add_candidate["company_name"],
                         direction=add_candidate["direction"],
+                        timeframe=add_candidate["timeframe"],
                         trade_date=str(trade_date_input),
                         entry_price=entry_price_input,
                         exit_price=(
@@ -565,26 +580,40 @@ with tab_scan:
                         ),
                         quantity=int(quantity_input),
                     )
-                    st.success(f"{add_label} を売買銘柄に追加しました")
+                    st.success(f"{add_label} を売買銘柄（{add_timeframe_label}）に追加しました")
 
         with col_watch:
             st.write("監視銘柄として追加")
-            st.caption(f"方向: {DIRECTION_LABELS[add_candidate['direction']]}")
+            st.caption(
+                f"方向: {DIRECTION_LABELS[add_candidate['direction']]}　"
+                f"時間足: {add_timeframe_label}"
+            )
 
             if st.button("監視銘柄に追加", use_container_width=True):
                 add_watchlist_stock(
                     code=add_candidate["code"],
                     company_name=add_candidate["company_name"],
                     direction=add_candidate["direction"],
+                    timeframe=add_candidate["timeframe"],
                     added_date=str(date.today()),
                 )
-                st.success(f"{add_label} を監視銘柄に追加しました")
+                st.success(f"{add_label} を監視銘柄（{add_timeframe_label}）に追加しました")
 
 
 with tab_trades:
     st.subheader("売買銘柄（トレード記録）")
 
-    trades = get_all_trades()
+    trades_timeframe = st.radio(
+        "時間足",
+        options=["daily", "weekly"],
+        format_func=lambda t: "日足" if t == "daily" else "週足",
+        horizontal=True,
+        key="trades_timeframe_filter",
+    )
+
+    trades = [
+        t for t in get_all_trades() if t["timeframe"] == trades_timeframe
+    ]
 
     if not trades:
         st.info(
@@ -608,6 +637,7 @@ with tab_trades:
                                 "コード": t["code"],
                                 "銘柄名": t["company_name"],
                                 "方向": DIRECTION_LABELS[t["direction"]],
+                                "時間足": TIMEFRAME_LABELS[t["timeframe"]],
                                 "取引日": t["trade_date"],
                                 "購入株価": t["entry_price"],
                                 "決済株価": t["exit_price"],
@@ -628,6 +658,10 @@ with tab_trades:
                             "決済株価": st.column_config.NumberColumn(
                                 help="空欄のままなら未決済として扱われます"
                             ),
+                            "時間足": st.column_config.SelectboxColumn(
+                                options=list(TIMEFRAME_LABELS.values()),
+                                help="日足/週足を間違えて登録した場合はここで修正できます",
+                            ),
                         },
                     )
 
@@ -636,17 +670,20 @@ with tab_trades:
                         new_exit_price = (
                             None if pd.isna(row["決済株価"]) else float(row["決済株価"])
                         )
+                        new_timeframe = TIMEFRAME_LABELS_INVERSE[row["時間足"]]
 
                         if (
                             row["購入株価"] != trade["entry_price"]
                             or new_exit_price != trade["exit_price"]
                             or row["株数"] != trade["quantity"]
+                            or new_timeframe != trade["timeframe"]
                         ):
                             update_trade(
                                 trade["id"],
                                 entry_price=float(row["購入株価"]),
                                 exit_price=new_exit_price,
                                 quantity=int(row["株数"]),
+                                timeframe=new_timeframe,
                             )
                             st.rerun()
 
@@ -670,7 +707,17 @@ with tab_trades:
 with tab_watchlist:
     st.subheader("監視銘柄")
 
-    watchlist_stocks = get_all_watchlist_stocks()
+    watchlist_timeframe = st.radio(
+        "時間足",
+        options=["daily", "weekly"],
+        format_func=lambda t: "日足" if t == "daily" else "週足",
+        horizontal=True,
+        key="watchlist_timeframe_filter",
+    )
+
+    watchlist_stocks = [
+        w for w in get_all_watchlist_stocks() if w["timeframe"] == watchlist_timeframe
+    ]
 
     if not watchlist_stocks:
         st.info(
@@ -678,19 +725,41 @@ with tab_watchlist:
             "「スキャン」タブの候補から追加してください。"
         )
     else:
-        st.dataframe(
-            pd.DataFrame([
+        watchlist_display_df = pd.DataFrame(
+            [
                 {
                     "コード": w["code"],
                     "銘柄名": w["company_name"],
                     "方向": DIRECTION_LABELS[w["direction"]],
+                    "時間足": TIMEFRAME_LABELS[w["timeframe"]],
                     "追加日": w["added_date"],
                 }
                 for w in watchlist_stocks
-            ]),
-            use_container_width=True,
-            hide_index=True,
+            ],
+            index=[w["id"] for w in watchlist_stocks],
         )
+
+        edited_watchlist_df = st.data_editor(
+            watchlist_display_df,
+            key="watchlist_editor",
+            use_container_width=True,
+            disabled=["コード", "銘柄名", "方向", "追加日"],
+            column_config={
+                "時間足": st.column_config.SelectboxColumn(
+                    options=list(TIMEFRAME_LABELS.values()),
+                    help="日足/週足を間違えて登録した場合はここで修正できます",
+                ),
+            },
+        )
+
+        for stock in watchlist_stocks:
+            new_timeframe = TIMEFRAME_LABELS_INVERSE[
+                edited_watchlist_df.loc[stock["id"], "時間足"]
+            ]
+
+            if new_timeframe != stock["timeframe"]:
+                update_watchlist_timeframe(stock["id"], new_timeframe)
+                st.rerun()
 
         st.divider()
         delete_watchlist_options = {

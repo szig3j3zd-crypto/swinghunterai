@@ -86,6 +86,11 @@ Streamlit側に新しいウィジェットとして扱わせる）。
 - 売買銘柄として追加: 取引日・購入株価（デフォルトは現在株価）・株数・決済株価
   （0のままなら未決済）を入力して登録
 - 監視銘柄として追加: ボタン1つで登録（方向のみ引き継ぐ）
+- どちらも、その銘柄を評価したときの時間足（サイドバーの「時間足」）を
+  一緒に記録する（候補一覧・個別銘柄検索いずれも`service.screening_service`の
+  候補/評価結果dictに`timeframe`キーとして含まれる）。日足・週足それぞれで
+  別々に候補検索する運用のため、売買銘柄・監視銘柄タブでも時間足ごとに
+  分けて表示する（5章・6章参照）
 
 ---
 
@@ -183,14 +188,20 @@ Streamlit側に新しいウィジェットとして扱わせる）。
 
 `database/trade_repository.py`（`trades`テーブル）で永続化。
 
+- タブ上部の「時間足」ラジオ（日足/週足）で、その時間足で登録した
+  トレードのみに絞り込んで表示する（日足・週足それぞれ別々に候補検索・
+  記録する運用のため）
 - 年→月にグルーピングして表示（`service/trade_service.py`の
   `group_by_year_and_month`）。それぞれ月間損益・年間損益を表示し、
   全期間の損益合計も表示する
 - 損益計算（`calculate_pnl`）: ロングは`(決済株価-購入株価)×株数`、
   ショートは`(購入株価-決済株価)×株数`。決済株価が無い（未決済）トレードは
   損益計算・集計の対象外
-- 表内で購入株価・決済株価・株数を直接編集できる（`st.data_editor`）。
-  決済株価を後から入力して未決済→決済済みに変更できる
+- 表内で購入株価・決済株価・株数・時間足を直接編集できる（`st.data_editor`）。
+  決済株価を後から入力して未決済→決済済みに変更できる。時間足は
+  `SelectboxColumn`（日足/週足）で、日足/週足を間違えて登録した場合に
+  ここで修正できる（保存すると、現在表示中の時間足フィルタと一致しなく
+  なった行はそのタイミングで一覧から消える）
 - 削除は別途セレクトボックス+ボタンで行う
 
 ---
@@ -199,6 +210,11 @@ Streamlit側に新しいウィジェットとして扱わせる）。
 
 `database/watchlist_repository.py`（`watchlist`テーブル）で永続化。
 コード・銘柄名・方向・追加日の一覧表示と削除のみのシンプルな機能。
+
+- 売買銘柄タブと同様、タブ上部の「時間足」ラジオ（日足/週足）で
+  登録時の時間足ごとに絞り込んで表示する
+- 時間足は`st.data_editor`の`SelectboxColumn`で直接編集でき、登録間違いを
+  後から修正できる（`database.watchlist_repository.update_watchlist_timeframe`）
 
 ---
 
@@ -210,6 +226,7 @@ Streamlit側に新しいウィジェットとして扱わせる）。
 |---|---|
 | id | 主キー |
 | code, company_name, direction | 銘柄コード・銘柄名・方向（long/short） |
+| timeframe | 登録時の時間足（"daily" \| "weekly"）。デフォルト"daily" |
 | trade_date | 取引日（"YYYY-MM-DD"） |
 | entry_price, exit_price, quantity | 購入株価・決済株価（NULL=未決済）・株数 |
 | created_at | 登録日時 |
@@ -220,8 +237,15 @@ Streamlit側に新しいウィジェットとして扱わせる）。
 |---|---|
 | id | 主キー |
 | code, company_name, direction | 銘柄コード・銘柄名・方向 |
+| timeframe | 登録時の時間足（"daily" \| "weekly"）。デフォルト"daily" |
 | added_date | 追加日（"YYYY-MM-DD"） |
 | created_at | 登録日時 |
+
+timeframe列は後から追加したため、`create_table()`内で
+`ALTER TABLE ... ADD COLUMN timeframe TEXT DEFAULT 'daily'`による
+マイグレーションも行う（既存データは全て日足として扱う）。
+`ui/dashboard.py`が起動のたびに`create_trades_table()`/
+`create_watchlist_table()`を呼ぶため、既存DBでも自動的に反映される。
 
 ---
 

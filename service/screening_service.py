@@ -121,6 +121,7 @@ def get_today_candidates(direction="long", stocks=None, min_history=100,
                 candidates.append({
                     "code": code,
                     "company_name": company_name,
+                    "timeframe": timeframe,
                     **result,
                 })
 
@@ -212,7 +213,12 @@ def evaluate_single_stock(code, direction="long", timeframe="daily", min_history
             "error": "株価データが不足しているため評価できません",
         }
 
-    return {"code": code, "company_name": company_name, **result}
+    return {
+        "code": code,
+        "company_name": company_name,
+        "timeframe": timeframe,
+        **result,
+    }
 
 
 def _evaluate_stock(code, direction, timeframe, min_history,

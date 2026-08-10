@@ -1,3 +1,5 @@
+import sqlite3
+
 from database.db import create_connection
 
 
@@ -19,6 +21,7 @@ def create_table():
             code TEXT,
             company_name TEXT,
             direction TEXT,
+            timeframe TEXT DEFAULT 'daily',
 
             trade_date TEXT,
 
@@ -32,11 +35,21 @@ def create_table():
         """
     )
 
+    # 既存DB（timeframe列がまだ無いテーブル）への追加マイグレーション。
+    # 列が既にあればOperationalErrorになるので無視する。DEFAULT 'daily'は
+    # 既存行にも適用される（timeframeが無かった頃は日足での運用が前提だったため）
+    try:
+        cursor.execute(
+            "ALTER TABLE trades ADD COLUMN timeframe TEXT DEFAULT 'daily'"
+        )
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
 
-def add_trade(code, company_name, direction, trade_date,
+def add_trade(code, company_name, direction, timeframe, trade_date,
               entry_price, exit_price, quantity):
     """
     売買銘柄を1件登録する
@@ -55,18 +68,20 @@ def add_trade(code, company_name, direction, trade_date,
             code,
             company_name,
             direction,
+            timeframe,
             trade_date,
             entry_price,
             exit_price,
             quantity,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             code,
             company_name,
             direction,
+            timeframe,
             trade_date,
             entry_price,
             exit_price,
@@ -78,9 +93,10 @@ def add_trade(code, company_name, direction, trade_date,
     conn.close()
 
 
-def update_trade(trade_id, entry_price, exit_price, quantity):
+def update_trade(trade_id, entry_price, exit_price, quantity, timeframe):
     """
-    売買銘柄の価格・株数を更新する（決済価格の後入力など）
+    売買銘柄の価格・株数・時間足を更新する
+    （決済価格の後入力、日足/週足の登録間違いの修正など）
     """
 
     conn = create_connection()
@@ -90,13 +106,14 @@ def update_trade(trade_id, entry_price, exit_price, quantity):
     cursor.execute(
         """
         UPDATE trades
-        SET entry_price = ?, exit_price = ?, quantity = ?
+        SET entry_price = ?, exit_price = ?, quantity = ?, timeframe = ?
         WHERE id = ?
         """,
         (
             entry_price,
             exit_price,
             quantity,
+            timeframe,
             trade_id
         )
     )
@@ -130,8 +147,8 @@ def get_all_trades():
     Returns
     -------
     trades
-        dictのリスト（id, code, company_name, direction, trade_date,
-        entry_price, exit_price, quantity）。trade_date降順
+        dictのリスト（id, code, company_name, direction, timeframe,
+        trade_date, entry_price, exit_price, quantity）。trade_date降順
     """
 
     conn = create_connection()
@@ -145,6 +162,7 @@ def get_all_trades():
             code,
             company_name,
             direction,
+            timeframe,
             trade_date,
             entry_price,
             exit_price,
@@ -159,6 +177,7 @@ def get_all_trades():
         "code",
         "company_name",
         "direction",
+        "timeframe",
         "trade_date",
         "entry_price",
         "exit_price",

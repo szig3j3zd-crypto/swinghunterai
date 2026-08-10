@@ -1,3 +1,5 @@
+import sqlite3
+
 from database.db import create_connection
 
 
@@ -19,6 +21,7 @@ def create_table():
             code TEXT,
             company_name TEXT,
             direction TEXT,
+            timeframe TEXT DEFAULT 'daily',
 
             added_date TEXT,
 
@@ -28,11 +31,20 @@ def create_table():
         """
     )
 
+    # 既存DB（timeframe列がまだ無いテーブル）への追加マイグレーション。
+    # 列が既にあればOperationalErrorになるので無視する
+    try:
+        cursor.execute(
+            "ALTER TABLE watchlist ADD COLUMN timeframe TEXT DEFAULT 'daily'"
+        )
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
 
-def add_watchlist_stock(code, company_name, direction, added_date):
+def add_watchlist_stock(code, company_name, direction, timeframe, added_date):
     """
     監視銘柄を1件登録する
     """
@@ -48,17 +60,37 @@ def add_watchlist_stock(code, company_name, direction, added_date):
             code,
             company_name,
             direction,
+            timeframe,
             added_date,
             created_at
         )
-        VALUES (?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             code,
             company_name,
             direction,
+            timeframe,
             added_date
         )
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def update_watchlist_timeframe(watchlist_id, timeframe):
+    """
+    監視銘柄の時間足を更新する（日足/週足の登録間違いの修正用）
+    """
+
+    conn = create_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "UPDATE watchlist SET timeframe = ? WHERE id = ?",
+        (timeframe, watchlist_id)
     )
 
     conn.commit()
@@ -90,8 +122,8 @@ def get_all_watchlist_stocks():
     Returns
     -------
     stocks
-        dictのリスト（id, code, company_name, direction, added_date）。
-        added_date降順
+        dictのリスト（id, code, company_name, direction, timeframe,
+        added_date）。added_date降順
     """
 
     conn = create_connection()
@@ -105,13 +137,14 @@ def get_all_watchlist_stocks():
             code,
             company_name,
             direction,
+            timeframe,
             added_date
         FROM watchlist
         ORDER BY added_date DESC, id DESC
         """
     )
 
-    columns = ["id", "code", "company_name", "direction", "added_date"]
+    columns = ["id", "code", "company_name", "direction", "timeframe", "added_date"]
 
     rows = cursor.fetchall()
 
