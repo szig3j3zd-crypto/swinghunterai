@@ -90,19 +90,23 @@ def test_get_stock_chart_data_weekly_has_fewer_rows_than_daily():
     assert len(weekly) < len(daily)
 
 
-def test_format_reason_pattern_a():
-    candidate = {"pattern": "A", "bounce_number": 1}
+def test_format_reason_joins_module_labels():
+    candidate = {"modules": ["ma_order", "perfect_golden_cross"], "bounce_number": None}
 
-    assert format_reason(candidate) == "支持線/抵抗線付近の半分シグナル（反発1回目）"
-
-
-def test_format_reason_pattern_b_long():
-    candidate = {"pattern": "B", "bounce_number": 2, "direction": "long"}
-
-    assert format_reason(candidate) == "5日線・20日線ゴールデンクロスの半分シグナル（反発2回目）"
+    assert format_reason(candidate) == "並び順＋完全ゴールデンクロス"
 
 
-def test_format_reason_pattern_b_short():
-    candidate = {"pattern": "B", "bounce_number": 1, "direction": "short"}
+def test_format_reason_appends_bounce_number():
+    candidate = {"modules": ["bounce"], "bounce_number": 2}
 
-    assert format_reason(candidate) == "5日線・20日線デッドクロスの半分シグナル（反発1回目）"
+    assert format_reason(candidate) == "反発（反発2回目）"
+
+
+def test_format_reason_uses_short_labels_for_short_direction():
+    candidate = {
+        "modules": ["ma_order", "perfect_golden_cross", "parallel_rise"],
+        "bounce_number": None,
+        "direction": "short",
+    }
+
+    assert format_reason(candidate) == "並び順＋完全デッドクロス＋並走下降"

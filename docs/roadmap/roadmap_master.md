@@ -155,6 +155,15 @@ UI
 
 ※ service/screening_service.py（get_today_candidates）と ui/dashboard.py（Streamlit）として実装済み。デフォルトの対象銘柄は東証プライム全銘柄（market列で判定、1,559銘柄。ユーザーが実際に売買する市場のため）。大型株のみ（TOPIX Core30+Large70）に絞るget_large_cap_stocksも別途利用可能。`streamlit run ui/dashboard.py` で起動する。Playwrightで実ブラウザ動作確認済み（東証プライム全銘柄を約90秒でスキャンし候補20件を表示）。チャート表示・通知・ポートフォリオ・ダッシュボードの拡張はVer2.4以降で未着手。
 
+※ 2026-08-10、Rule Engine（rules/entry_rule.py）を判断基準ごとに選択式でAND結合する
+モジュール方式へ全面改訂（並び順・完全ゴールデンクロス・反発・並走上昇・半分シグナルの
+5モジュール。旧パターンA/Bは廃止）。詳細は docs/specifications/entry_signal_spec.md
+を参照。改訂後にバックテストを実施し、検証したロング全パターンで正の期待値、
+ショートは引き続きマイナスという結果を得た（半分シグナル単体・並走上昇単体は
+東証プライム全銘柄10年分で検証、それ以外は大型株40銘柄サンプル。数値詳細は
+entry_signal_spec.md 11章参照）。Scoring Engine（entry_score_spec.md）はこの
+モジュール化に未対応のままVer3.0以降へ先送り。
+
 🎯 Phase2 完了条件
 
 移動平均線と出来高だけで

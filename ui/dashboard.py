@@ -27,6 +27,8 @@ from database.watchlist_repository import (
     update_watchlist_timeframe,
 )
 from service.screening_service import (
+    DEFAULT_MODULES,
+    MODULE_LABELS,
     evaluate_single_stock,
     format_reason,
     get_jpx400_stocks,
@@ -53,13 +55,15 @@ SKIP_REASON_LABELS = {
     "volume_too_low": "出来高フィルタ未達",
     "price_out_of_range": "株価フィルタの範囲外",
     "not_in_trend": "トレンド条件未達（移動平均線の並び順・傾き）",
-    "no_half_signal_today": "本日は半分シグナルなし",
-    "pattern_a_without_valid_line": "支持線/抵抗線が無効",
+    "no_signal_today": "本日は選択した基準の条件が揃っていません",
     "trend_period_not_found": "トレンド期間を特定できず",
     "below_sma60": "60日線より下",
     "above_sma60": "60日線より上",
     "bounce_limit_exceeded": "反発回数が上限を超過",
 }
+
+MA_MODE_LABELS = {"full": "3本版（5>20>60）", "two_line": "2本版（5>20のみ）"}
+MA_MODE_LABELS_INVERSE = {v: k for k, v in MA_MODE_LABELS.items()}
 
 DIRECTION_LABELS = {"long": "ロング（買い）", "short": "ショート（売り）"}
 TIMEFRAME_LABELS = {"daily": "日足", "weekly": "週足"}
@@ -214,6 +218,14 @@ def _render_focus_block(label, result, code, chart_timeframe):
             pd.DataFrame([_candidate_row(result)]),
             use_container_width=True,
             hide_index=True,
+        )
+    elif result.get("is_watch_candidate"):
+        price = result.get("price")
+        price_note = f"　現在の株価: {price}円" if price is not None else ""
+        ma20_note = "MA20を上回っています" if result.get("direction") == "short" else "MA20を下回っています"
+        st.warning(
+            f"監視銘柄です（反発モジュール: {ma20_note}。"
+            f"回復すればエントリー候補に昇格します）{price_note}"
         )
     else:
         reason_label = SKIP_REASON_LABELS.get(result["reason"], result["reason"])
@@ -372,6 +384,26 @@ with st.sidebar:
         help="複数選択すると、選択した指数すべての銘柄を合わせて対象にします。",
     )
 
+    st.subheader("判断基準")
+
+    module_labels = st.multiselect(
+        "候補判断のモジュール（選択した基準をすべて満たす銘柄のみ候補にします）",
+        options=list(MODULE_LABELS.values()),
+        default=[MODULE_LABELS[name] for name in DEFAULT_MODULES],
+        help="entry_signal_spec.md参照。並び順・完全ゴールデンクロス・反発・"
+        "並走上昇・半分シグナルから選択します。",
+    )
+    module_labels_inverse = {v: k for k, v in MODULE_LABELS.items()}
+    modules = [module_labels_inverse[label] for label in module_labels]
+
+    ma_mode = "full"
+    if "ma_order" in modules:
+        ma_mode_label = st.radio(
+            "並び順のバリエーション",
+            options=list(MA_MODE_LABELS.values()),
+        )
+        ma_mode = MA_MODE_LABELS_INVERSE[ma_mode_label]
+
     st.subheader("フィルタ")
 
     # 「0で無効」は、Noneではなくフィルタ関数がそのまま「制約なし」と
@@ -416,11 +448,13 @@ with st.sidebar:
 # 個別銘柄検索の判定は、どのタブが表示中でも使えるようタブの外で評価しておく
 lookup_result = None
 
-if selected_code:
+if selected_code and modules:
     lookup_result = evaluate_single_stock(
         selected_code,
         direction=direction,
         timeframe=timeframe,
+        modules=modules,
+        ma_mode=ma_mode,
         min_volume=min_volume,
         min_price=min_price,
         max_price=max_price,
@@ -428,6 +462,8 @@ if selected_code:
 
 if run_button and not universe_labels:
     st.error("サイドバーの「採用指数」を1つ以上選択してください。")
+elif run_button and not modules:
+    st.error("サイドバーの「判断基準」を1つ以上選択してください。")
 elif run_button:
     universe_display = "・".join(universe_labels)
 
@@ -436,6 +472,8 @@ elif run_button:
             direction=direction,
             timeframe=timeframe,
             stocks=_combine_universes(universe_labels),
+            modules=modules,
+            ma_mode=ma_mode,
             min_volume=min_volume,
             min_price=min_price,
             max_price=max_price,

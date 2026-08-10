@@ -109,3 +109,36 @@ def test_get_current_trend_period_returns_none_when_not_trending():
     start_date = get_current_trend_period(df, direction="long")
 
     assert start_date is None
+
+
+def test_two_line_mode_ignores_sma60_order():
+    # sma60が並び順を崩していても、two_lineモードでは5>20だけを見る
+    df = _df(
+        sma5=[10, 15],
+        sma20=[8, 12],
+        sma60=[20, 20],  # 3本版なら60が5>20>60を崩す
+    )
+
+    assert is_long_trend(df, ma_mode="two_line") is True
+    assert is_long_trend(df, ma_mode="full") is False
+
+
+def test_two_line_mode_requires_both_ma_up():
+    df = _df(
+        sma5=[10, 15],
+        sma20=[12, 12],  # 横ばい
+        sma60=[5, 10],
+    )
+
+    assert is_long_trend(df, ma_mode="two_line") is False
+
+
+def test_two_line_mode_short_ignores_sma60_order():
+    df = _df(
+        sma5=[15, 10],
+        sma20=[20, 15],
+        sma60=[5, 5],  # 3本版なら60が並び順を崩す
+    )
+
+    assert is_short_trend(df, ma_mode="two_line") is True
+    assert is_short_trend(df, ma_mode="full") is False

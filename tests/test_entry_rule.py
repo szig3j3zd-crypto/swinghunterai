@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from rules.entry_rule import evaluate_entry
 
@@ -8,174 +9,203 @@ from rules.entry_rule import evaluate_entry
 NO_PRICE_FILTER = {"min_price": 0, "max_price": float("inf")}
 
 
-def _build_long_trend_df(length, spike_positions):
+def _base_df(sma5, sma20, sma60=None, close=None):
+    length = len(sma5)
+    close = close if close is not None else list(sma20)
 
-    """
-    上昇トレンド（5>20>60、全て右肩上がり）を満たすDataFrameを作る。
-    spike_positionsで指定した行だけ実体中央値が5日線を上抜けるようにする。
-    """
-
-    sma5 = [50 + 3 * i for i in range(length)]
-    sma20 = [40 + 2 * i for i in range(length)]
-    sma60 = [30 + i for i in range(length)]
-
-    close = [float(sma20[i]) for i in range(length)]
-
-    for pos in spike_positions:
-        close[pos] = sma5[pos] + 5
-
-    return pd.DataFrame({
+    data = {
         "date": pd.date_range("2026-01-01", periods=length, freq="D"),
         "open": close,
-        "high": close,
-        "low": close,
+        "high": [c + 1 for c in close],
+        "low": [c - 1 for c in close],
         "close": close,
         "volume": [600_000] * length,
         "volume_ratio": [2.5] * length,
         "sma5": sma5,
         "sma20": sma20,
-        "sma60": sma60,
-    })
+    }
+
+    if sma60 is not None:
+        data["sma60"] = sma60
+
+    return pd.DataFrame(data)
 
 
-def _build_short_trend_df(length, spike_positions):
-
-    """
-    下降トレンド（60>20>5、全て右肩下がり）を満たすDataFrameを作る。
-    spike_positionsで指定した行だけ実体中央値が5日線を下抜けるようにする。
-    """
-
-    sma5 = [150 - 3 * i for i in range(length)]
-    sma20 = [160 - 2 * i for i in range(length)]
-    sma60 = [170 - i for i in range(length)]
-
-    close = [float(sma20[i]) for i in range(length)]
-
-    for pos in spike_positions:
-        close[pos] = sma5[pos] - 5
-
-    return pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=length, freq="D"),
-        "open": close,
-        "high": close,
-        "low": close,
-        "close": close,
-        "volume": [600_000] * length,
-        "volume_ratio": [2.5] * length,
-        "sma5": sma5,
-        "sma20": sma20,
-        "sma60": sma60,
-    })
-
-
-def _build_golden_cross_df(direction):
-
-    """
-    5日線・20日線のクロス（パターンB）が直近日にちょうど発生し、
-    かつ直近日がトレンド条件（並び順・全MA上向き/下向き）を満たすDataFrameを作る。
-    """
-
-    if direction == "long":
-        sma5 = [90, 100]
-        sma20 = [92, 95]
-        sma60 = [80, 82]
-        close = [90.0, 100.0]
-    else:
-        sma5 = [110, 100]
-        sma20 = [108, 105]
-        sma60 = [120, 118]
-        close = [110.0, 100.0]
-
-    return pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=2, freq="D"),
-        "open": close,
-        "high": close,
-        "low": close,
-        "close": close,
-        "volume": [600_000] * 2,
-        "volume_ratio": [2.5] * 2,
-        "sma5": sma5,
-        "sma20": sma20,
-        "sma60": sma60,
-    })
-
-
-def test_first_bounce_is_entry_candidate():
-    df = _build_golden_cross_df("long")
-
-    result = evaluate_entry(df, direction="long", **NO_PRICE_FILTER)
-
-    assert result["is_entry_candidate"] is True
-    assert result["pattern"] == "B"
-    assert result["bounce_number"] == 1
-    assert result["score"]["ma_score"] == 40  # 1発目
-    assert result["score"]["volume_score"] == 40  # volume_ratio=2.5
-
-
-def test_second_bounce_is_entry_candidate():
-    # パターンB（5-20日線ゴールデンクロス）はクロスの度にトレンド期間が
-    # リセットされるため、複数回の反発はパターンA（支持線付近）で検証する
-    df = _build_long_trend_df(16, spike_positions=[3, 15])
-    support_lines = [{"price": 1, "valid_since_date": df["date"].iloc[0]}]
+def test_ma_order_and_perfect_golden_cross_combo_is_candidate():
+    df = _base_df(
+        sma5=[90, 100],
+        sma20=[92, 95],
+        sma60=[70, 71],
+        close=[90.0, 100.0],
+    )
 
     result = evaluate_entry(
-        df, direction="long", support_lines=support_lines, **NO_PRICE_FILTER
+        df, direction="long", modules=["ma_order", "perfect_golden_cross"],
+        **NO_PRICE_FILTER,
     )
 
     assert result["is_entry_candidate"] is True
-    assert result["pattern"] == "A"
-    assert result["bounce_number"] == 2
-    assert result["score"]["ma_score"] == 20  # 2発目
+    assert result["modules"] == ["ma_order", "perfect_golden_cross"]
+    assert result["bounce_number"] is None
 
 
-def test_third_bounce_exceeds_limit():
-    df = _build_long_trend_df(28, spike_positions=[3, 15, 27])
-    support_lines = [{"price": 1, "valid_since_date": df["date"].iloc[0]}]
+def test_combination_and_fails_when_one_module_is_false():
+    # ma_orderは満たすが、直近日にゴールデンクロスは発生していない
+    df = _base_df(
+        sma5=[90, 91],
+        sma20=[80, 81],
+        sma60=[70, 70.5],
+        close=[90.0, 91.0],
+    )
 
     result = evaluate_entry(
-        df, direction="long", support_lines=support_lines, **NO_PRICE_FILTER
+        df, direction="long", modules=["ma_order", "perfect_golden_cross"],
+        **NO_PRICE_FILTER,
     )
 
     assert result["is_entry_candidate"] is False
-    assert result["reason"] == "bounce_limit_exceeded"
+    assert result["reason"] == "no_signal_today"
 
 
-def test_skipped_when_not_in_trend():
-    df = _build_long_trend_df(4, spike_positions=[3])
-    df.loc[df.index[-1], "sma5"] = 10  # 直近日で並び順が崩れる
+def test_two_line_mode_skips_sma60_filter():
+    # sma60は並び順を崩しているが、two_lineモードでは60日線を見ないため候補になる
+    df = _base_df(
+        sma5=[10, 15],
+        sma20=[8, 12],
+        sma60=[20, 20],
+        close=[10.0, 15.0],
+    )
 
-    result = evaluate_entry(df, direction="long", **NO_PRICE_FILTER)
+    result = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="two_line",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is True
+
+
+def test_ma_order_full_mode_rejects_when_below_sma60():
+    df = _base_df(
+        sma5=[10, 15],
+        sma20=[8, 12],
+        sma60=[20, 20.1],
+        close=[10.0, 15.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="full",
+        **NO_PRICE_FILTER,
+    )
 
     assert result["is_entry_candidate"] is False
     assert result["reason"] == "not_in_trend"
 
 
-def test_skipped_when_no_half_signal_today():
-    df = _build_long_trend_df(5, spike_positions=[])
+def test_bounce_module_alone_returns_watch_candidate():
+    # MA20を少し下回った日（回復前）は監視銘柄として扱う
+    df = _base_df(
+        sma5=[110, 107, 104, 101.5, 102.0],
+        sma20=[100.0, 100.4, 100.8, 101.2, 102.2],
+    )
 
-    result = evaluate_entry(df, direction="long", **NO_PRICE_FILTER)
+    result = evaluate_entry(df, direction="long", modules=["bounce"], **NO_PRICE_FILTER)
 
     assert result["is_entry_candidate"] is False
-    assert result["reason"] == "no_half_signal_today"
+    assert result["is_watch_candidate"] is True
+
+
+def test_bounce_module_alone_promotes_to_candidate_on_recovery_day():
+    df = _base_df(
+        sma5=[110, 107, 104, 101.5, 102.0, 103.0],
+        sma20=[100.0, 100.4, 100.8, 101.2, 102.2, 102.6],
+    )
+
+    result = evaluate_entry(df, direction="long", modules=["bounce"], **NO_PRICE_FILTER)
+
+    assert result["is_entry_candidate"] is True
+    assert result["is_watch_candidate"] is False
+    assert result["bounce_number"] == 1
+
+
+def test_bounce_module_alone_returns_watch_candidate_for_short():
+    # ショート版: MA5がMA20を少し上回った日（回復前）は監視銘柄として扱う
+    df = _base_df(
+        sma5=[90, 93, 96, 98.5, 98.0],
+        sma20=[100.0, 99.6, 99.2, 98.8, 97.8],
+    )
+
+    result = evaluate_entry(df, direction="short", modules=["bounce"], **NO_PRICE_FILTER)
+
+    assert result["is_entry_candidate"] is False
+    assert result["is_watch_candidate"] is True
+    assert result["reason"] == "bounce_above_ma20_watch"
+
+
+def test_half_signal_module_alone_is_candidate():
+    df = _base_df(
+        sma5=[100, 100],
+        sma20=[90, 90],
+        close=[95.0, 105.0],
+    )
+    df["open"] = [95.0, 105.0]
+
+    result = evaluate_entry(df, direction="long", modules=["half_signal"], **NO_PRICE_FILTER)
+
+    assert result["is_entry_candidate"] is True
+
+
+def test_parallel_rise_module_alone_is_candidate():
+    df = _base_df(
+        sma5=[9.0, 9.8, 10.6, 11.0, 11.5],
+        sma20=[10.0, 10.2, 10.5, 10.8, 11.1],
+        close=[9.0, 9.8, 10.6, 11.0, 11.5],
+    )
+
+    result = evaluate_entry(df, direction="long", modules=["parallel_rise"], **NO_PRICE_FILTER)
+
+    assert result["is_entry_candidate"] is True
 
 
 def test_skipped_when_volume_too_low():
-    df = _build_long_trend_df(4, spike_positions=[3])
+    df = _base_df(
+        sma5=[90, 100],
+        sma20=[92, 95],
+        sma60=[70, 71],
+        close=[90.0, 100.0],
+    )
     df.loc[df.index[-1], "volume"] = 100
 
-    result = evaluate_entry(df, direction="long")
+    result = evaluate_entry(df, direction="long", modules=["ma_order", "perfect_golden_cross"])
 
     assert result["is_entry_candidate"] is False
     assert result["reason"] == "volume_too_low"
 
 
-def test_short_first_bounce_is_entry_candidate():
-    df = _build_golden_cross_df("short")
+def test_short_perfect_dead_cross_is_candidate():
+    df = _base_df(
+        sma5=[110, 100],
+        sma20=[108, 105],
+        sma60=[120, 118],
+        close=[110.0, 100.0],
+    )
 
-    result = evaluate_entry(df, direction="short", **NO_PRICE_FILTER)
+    result = evaluate_entry(
+        df, direction="short", modules=["ma_order", "perfect_golden_cross"],
+        **NO_PRICE_FILTER,
+    )
 
     assert result["is_entry_candidate"] is True
-    assert result["pattern"] == "B"
-    assert result["bounce_number"] == 1
 
 
+def test_empty_modules_raises():
+    df = _base_df(sma5=[100], sma20=[90])
+
+    with pytest.raises(ValueError):
+        evaluate_entry(df, direction="long", modules=[], **NO_PRICE_FILTER)
+
+
+def test_unknown_module_raises():
+    df = _base_df(sma5=[100], sma20=[90])
+
+    with pytest.raises(ValueError):
+        evaluate_entry(df, direction="long", modules=["not_a_real_module"], **NO_PRICE_FILTER)

@@ -85,6 +85,18 @@ MAX_ENTRY_BOUNCES = 2
 # 近接した反発を1回にまとめる際の間隔（営業日ベース、行数の差で判定）
 BOUNCE_MERGE_WITHIN_DAYS = 5
 
+# 反発モジュール: 反発の前提となる直前の下落継続の最低営業日数
+BOUNCE_MIN_DECLINE_DAYS = 3
+
+# 反発モジュール: MA5とMA20の接近しきい値（乖離率）
+BOUNCE_MA_PROXIMITY_PCT = 0.01
+
+# 反発モジュール: MA20を下回ってから回復とみなす猶予営業日数
+BOUNCE_UNDERSHOOT_RECOVERY_DAYS = 3
+
+# 並走上昇モジュール: 完全ゴールデンクロス（デッドクロス）からのオフセット営業日数
+PARALLEL_RISE_OFFSET_DAYS = 2
+
 # 保有期間の警告しきい値（営業日）。利確・損切に未到達のままこの日数を超えたら
 # 見直し候補として警告する（強制決済はしない）
 MAX_HOLDING_DAYS = 20

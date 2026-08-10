@@ -1,10 +1,11 @@
-from analysis.support_resistance import detect_resistance_lines, detect_support_lines
 from config.config import MAX_HOLDING_DAYS
 from rules.entry_rule import evaluate_entry
 
+DEFAULT_MODULES = ("ma_order", "perfect_golden_cross")
+
 
 def find_historical_signals(df, direction, min_history=100, timeframe="daily",
-                             bounce_merge_within=None):
+                             modules=None, ma_mode="full", bounce_merge_within=None):
 
     """
     過去データを1本ずつ遡って、その時点までの情報だけでエントリー候補に
@@ -25,7 +26,14 @@ def find_historical_signals(df, direction, min_history=100, timeframe="daily",
         判定を開始する最低行数（指標が安定するまでの助走期間）
 
     timeframe
-        "daily" | "weekly" | "monthly"（支持線・抵抗線の検出期間切替に使用）
+        "daily" | "weekly" | "monthly"
+
+    modules
+        使用するモジュール名のリスト。Noneならconfig既定値
+        （並び順＋完全ゴールデンクロス）を使う
+
+    ma_mode
+        "ma_order"選択時の並び順バリエーション。"full"（デフォルト）または"two_line"
 
     bounce_merge_within
         近接した反発をまとめる間隔（行数ベース）。Noneならconfig既定値を使う
@@ -37,24 +45,20 @@ def find_historical_signals(df, direction, min_history=100, timeframe="daily",
         evaluate_entryの戻り値）のリスト
     """
 
+    if modules is None:
+        modules = DEFAULT_MODULES
+
     signals = []
 
     for i in range(min_history, len(df)):
 
         window_df = df.iloc[:i + 1]
 
-        if direction == "long":
-            support_lines = detect_support_lines(window_df, timeframe=timeframe)
-            resistance_lines = None
-        else:
-            support_lines = None
-            resistance_lines = detect_resistance_lines(window_df, timeframe=timeframe)
-
         result = evaluate_entry(
             window_df,
             direction,
-            support_lines=support_lines,
-            resistance_lines=resistance_lines,
+            modules=modules,
+            ma_mode=ma_mode,
             bounce_merge_within=bounce_merge_within,
         )
 
@@ -155,7 +159,8 @@ def simulate_trade(df, entry_index, direction, stop_loss_price, take_profit_pric
 
 
 def run_backtest(df, direction, min_history=100, max_holding_days=None,
-                  timeframe="daily", bounce_merge_within=None):
+                  timeframe="daily", modules=None, ma_mode="full",
+                  bounce_merge_within=None):
 
     """
     銘柄1件分のシグナル抽出とトレードシミュレーションをまとめて実行する
@@ -164,6 +169,13 @@ def run_backtest(df, direction, min_history=100, max_holding_days=None,
     ----------
     timeframe
         "daily" | "weekly" | "monthly"
+
+    modules
+        使用するモジュール名のリスト。Noneならconfig既定値
+        （並び順＋完全ゴールデンクロス）を使う
+
+    ma_mode
+        "ma_order"選択時の並び順バリエーション。"full"（デフォルト）または"two_line"
 
     bounce_merge_within
         近接した反発をまとめる間隔（行数ベース）。Noneならconfig既定値を使う
@@ -177,7 +189,7 @@ def run_backtest(df, direction, min_history=100, max_holding_days=None,
 
     signals = find_historical_signals(
         df, direction, min_history=min_history, timeframe=timeframe,
-        bounce_merge_within=bounce_merge_within,
+        modules=modules, ma_mode=ma_mode, bounce_merge_within=bounce_merge_within,
     )
 
     trades = []

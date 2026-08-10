@@ -1,6 +1,6 @@
 import pandas as pd
 
-from backtest.simulator import simulate_trade
+from backtest.simulator import run_backtest, simulate_trade
 
 
 def _df(rows):
@@ -103,6 +103,50 @@ def test_data_ended_before_holding_period_or_exit_condition():
 
     assert result["exit_reason"] == "data_ended"
     assert result["exit_index"] == 1
+
+
+def _golden_cross_df():
+
+    """
+    2営業日目に完全ゴールデンクロスが発生するDataFrame（run_backtest用）。
+    株価はconfig既定の価格フィルタ(1000〜5000円)内に収める
+    """
+
+    length = 4
+    close = [1800.0, 2000.0, 2010.0, 2020.0]
+
+    return pd.DataFrame({
+        "date": pd.date_range("2026-01-01", periods=length, freq="D"),
+        "open": close,
+        "high": [c + 10 for c in close],
+        "low": [c - 10 for c in close],
+        "close": close,
+        "volume": [600_000] * length,
+        "volume_ratio": [2.5] * length,
+        "sma5": [1800, 2000, 2010, 2020],
+        "sma20": [1840, 1900, 1920, 1940],
+        "sma60": [1400, 1420, 1440, 1460],
+    })
+
+
+def test_run_backtest_uses_the_given_modules():
+    df = _golden_cross_df()
+
+    trades = run_backtest(
+        df, direction="long", min_history=1,
+        modules=["ma_order", "perfect_golden_cross"],
+    )
+
+    assert len(trades) == 1
+    assert trades[0]["modules"] == ["ma_order", "perfect_golden_cross"]
+
+
+def test_run_backtest_finds_nothing_when_modules_dont_match():
+    df = _golden_cross_df()
+
+    trades = run_backtest(df, direction="long", min_history=1, modules=["bounce"])
+
+    assert trades == []
 
 
 def test_short_direction_stop_and_target_are_mirrored():
