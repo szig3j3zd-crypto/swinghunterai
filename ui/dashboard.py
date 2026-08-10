@@ -491,17 +491,6 @@ elif run_button:
 
 candidates = st.session_state.get("candidates")
 
-# 売買銘柄・監視銘柄に追加できる銘柄。
-# スキャン結果は候補（エントリー候補）のみ。個別銘柄検索は、株価さえ取得できれば
-# 候補かどうかに関わらず追加できる（手動で売買記録・監視したいだけの場合もあるため）
-addable_candidates = {}
-
-for candidate in (candidates or []):
-    addable_candidates[candidate["code"]] = candidate
-
-if lookup_result is not None and "error" not in lookup_result:
-    addable_candidates[lookup_result["code"]] = lookup_result
-
 
 tab_scan, tab_trades, tab_watchlist = st.tabs(["スキャン", "売買銘柄", "監視銘柄"])
 
@@ -567,20 +556,30 @@ with tab_scan:
             )
             st.divider()
 
-    if addable_candidates:
+    # 売買銘柄・監視銘柄への追加は、上のチャートで表示中の銘柄（focus_mode）
+    # とだけ連動させる。候補一覧から独立して選び直せる欄を持たせると、
+    # チャートで確認した銘柄と違う銘柄を誤って追加できてしまうため
+    add_candidate = None
+
+    if focus_mode == "search" and selected_code and lookup_result is not None \
+            and "error" not in lookup_result:
+        add_candidate = lookup_result
+    elif focus_mode == "candidate" and st.session_state.get("focus_candidate"):
+        add_candidate = st.session_state["focus_candidate"]
+
+    if add_candidate is not None:
         st.divider()
         st.subheader("売買銘柄・監視銘柄に追加")
 
-        add_options = {
-            f"{c['code']} {c['company_name']}": c
-            for c in addable_candidates.values()
-        }
-        add_label = st.selectbox(
-            "追加する銘柄を選択",
-            options=list(add_options.keys()),
-            key="add_target_select",
+        add_label = f"{add_candidate['code']} {add_candidate['company_name']}"
+        st.caption(f"追加対象: {add_label}（上に表示中のチャートと同じ銘柄）")
+    elif candidates or (lookup_result is not None and "error" not in lookup_result):
+        st.divider()
+        st.info(
+            "候補一覧の行を選択するか、個別銘柄検索で銘柄を選ぶと、"
+            "チャートを確認したうえで売買銘柄・監視銘柄に追加できます。"
         )
-        add_candidate = add_options[add_label]
+
         add_timeframe_label = (
             "日足" if add_candidate["timeframe"] == "daily" else "週足"
         )
