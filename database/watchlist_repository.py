@@ -115,6 +115,36 @@ def delete_watchlist_stock(watchlist_id):
     conn.close()
 
 
+def delete_watchlist_stocks_by_code(code):
+    """
+    指定銘柄コードの監視銘柄をすべて削除する
+
+    売買銘柄への追加時、「監視」から「保有」に卒業したものとして
+    自動的に監視銘柄から取り除くために使う
+
+    Returns
+    -------
+    deleted_count
+        削除した件数
+    """
+
+    conn = create_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "DELETE FROM watchlist WHERE code = ?",
+        (code,)
+    )
+
+    deleted_count = cursor.rowcount
+
+    conn.commit()
+    conn.close()
+
+    return deleted_count
+
+
 def get_all_watchlist_stocks():
     """
     監視銘柄を全件取得する

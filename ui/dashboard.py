@@ -17,12 +17,14 @@ from database.trade_repository import (
     create_table as create_trades_table,
     delete_trade,
     get_all_trades,
+    has_open_trade,
     update_trade,
 )
 from database.watchlist_repository import (
     add_watchlist_stock,
     create_table as create_watchlist_table,
     delete_watchlist_stock,
+    delete_watchlist_stocks_by_code,
     get_all_watchlist_stocks,
     update_watchlist_timeframe,
 )
@@ -185,16 +187,27 @@ CHART_DISPLAY_PREF_DEFAULTS = {
 }
 
 
-def _persistent_checkbox(label, pref_key):
+def _persistent_checkbox(label, base_key, key_prefix):
 
     """
     「候補を更新」やフォーカス対象の切り替えを挟んでも状態が消えない
     チェックボックス。st.checkbox()自体は毎回新規生成されるが、
     表示するvalue/変更後の値はpref_key下のsession_stateで独自に管理する
+
+    key_prefixは、同じチャートブロック（_render_chart_block）が
+    スキャン/売買銘柄/監視銘柄の各タブで同時に呼ばれてもウィジェットの
+    keyが衝突しないようにするための区別用（表示設定はタブごとに独立して覚える）
     """
 
+    pref_key = f"{base_key}_{key_prefix}"
+
+    # ウィジェット自身のkeyとpref_keyを分ける。同じキーを両方に使うと、
+    # 「ウィジェットが持つsession_stateは生成後に手動で書き換えられない」
+    # というStreamlitの制約に反してStreamlitAPIExceptionになるため
     value = st.checkbox(
-        label, value=st.session_state.get(pref_key, CHART_DISPLAY_PREF_DEFAULTS[pref_key])
+        label,
+        value=st.session_state.get(pref_key, CHART_DISPLAY_PREF_DEFAULTS[base_key]),
+        key=f"{pref_key}_widget",
     )
     st.session_state[pref_key] = value
     return value
@@ -236,6 +249,20 @@ def _render_focus_block(label, result, code, chart_timeframe):
             f"（理由: {reason_label}）{price_note}"
         )
 
+    _render_chart_block(code, chart_timeframe, key_prefix="scan")
+
+
+def _render_chart_block(code, chart_timeframe, key_prefix):
+
+    """
+    株価チャート（表示期間・移動平均線等の表示切替を含む）を描画する
+
+    スキャンタブの銘柄詳細（_render_focus_block）、売買銘柄/監視銘柄タブでの
+    銘柄選択時のチャート表示から共通で呼び出す。key_prefixは、複数の
+    タブで同時に呼ばれてもウィジェットのkeyが衝突しないようにするための
+    区別用（"scan" | "trades" | "watchlist"）
+    """
+
     st.markdown("##### 株価チャート")
 
     chart_df = get_stock_chart_data(code, timeframe=chart_timeframe)
@@ -253,7 +280,7 @@ def _render_focus_block(label, result, code, chart_timeframe):
     )
     # 表示期間も同様に、ウィジェット自身のkeyだけでなく独立したsession_stateで
     # 現在値を管理し、このブロックが描画されないrunを挟んでも維持する
-    period_pref_key = f"chart_period_pref_{chart_timeframe}"
+    period_pref_key = f"chart_period_pref_{key_prefix}_{chart_timeframe}"
     with period_col:
         period_label = st.selectbox(
             "表示期間",
@@ -261,21 +288,25 @@ def _render_focus_block(label, result, code, chart_timeframe):
             index=CHART_PERIOD_OPTIONS.index(
                 st.session_state.get(period_pref_key, CHART_PERIOD_DEFAULT[chart_timeframe])
             ),
-            key=f"chart_period_select_{chart_timeframe}",
+            key=f"chart_period_select_{key_prefix}_{chart_timeframe}",
         )
     st.session_state[period_pref_key] = period_label
     with cb_candle:
-        show_candlestick = _persistent_checkbox("ローソク足", "chart_pref_show_candlestick")
+        show_candlestick = _persistent_checkbox(
+            "ローソク足", "chart_pref_show_candlestick", key_prefix
+        )
     with cb_sma5:
-        show_sma5 = _persistent_checkbox("5日線", "chart_pref_show_sma5")
+        show_sma5 = _persistent_checkbox("5日線", "chart_pref_show_sma5", key_prefix)
     with cb_sma20:
-        show_sma20 = _persistent_checkbox("20日線", "chart_pref_show_sma20")
+        show_sma20 = _persistent_checkbox("20日線", "chart_pref_show_sma20", key_prefix)
     with cb_sma60:
-        show_sma60 = _persistent_checkbox("60日線", "chart_pref_show_sma60")
+        show_sma60 = _persistent_checkbox("60日線", "chart_pref_show_sma60", key_prefix)
     with cb_volume:
-        show_volume = _persistent_checkbox("出来高", "chart_pref_show_volume")
+        show_volume = _persistent_checkbox("出来高", "chart_pref_show_volume", key_prefix)
     with cb_hover:
-        show_hover_info = _persistent_checkbox("詳細情報", "chart_pref_show_hover_info")
+        show_hover_info = _persistent_checkbox(
+            "詳細情報", "chart_pref_show_hover_info", key_prefix
+        )
 
     # 高値・安値・始値・終値は、Streamlit要素としてではなく、
     # チャート凡例の右横（同じ行）に来るようPlotly側の注釈として埋め込む
@@ -327,7 +358,7 @@ def _render_focus_block(label, result, code, chart_timeframe):
         ),
         use_container_width=True,
         config=PLOTLY_CONFIG,
-        key=f"price_chart_{code}",
+        key=f"price_chart_{key_prefix}_{code}",
     )
     st.caption(
         "上のプルダウンで表示期間を切り替えられます（価格・出来高の軸は"
@@ -573,12 +604,6 @@ with tab_scan:
 
         add_label = f"{add_candidate['code']} {add_candidate['company_name']}"
         st.caption(f"追加対象: {add_label}（上に表示中のチャートと同じ銘柄）")
-    elif candidates or (lookup_result is not None and "error" not in lookup_result):
-        st.divider()
-        st.info(
-            "候補一覧の行を選択するか、個別銘柄検索で銘柄を選ぶと、"
-            "チャートを確認したうえで売買銘柄・監視銘柄に追加できます。"
-        )
 
         add_timeframe_label = (
             "日足" if add_candidate["timeframe"] == "daily" else "週足"
@@ -617,7 +642,22 @@ with tab_scan:
                         ),
                         quantity=int(quantity_input),
                     )
-                    st.success(f"{add_label} を売買銘柄（{add_timeframe_label}）に追加しました")
+
+                    # 監視から保有へ卒業したとみなし、監視銘柄に残っていれば
+                    # 自動で削除する（手動削除の手間・二重登録を防ぐため）
+                    removed_from_watchlist = delete_watchlist_stocks_by_code(
+                        add_candidate["code"]
+                    )
+
+                    if removed_from_watchlist:
+                        st.success(
+                            f"{add_label} を売買銘柄（{add_timeframe_label}）に追加し、"
+                            "監視銘柄からは削除しました"
+                        )
+                    else:
+                        st.success(
+                            f"{add_label} を売買銘柄（{add_timeframe_label}）に追加しました"
+                        )
 
         with col_watch:
             st.write("監視銘柄として追加")
@@ -627,185 +667,283 @@ with tab_scan:
             )
 
             if st.button("監視銘柄に追加", use_container_width=True):
-                add_watchlist_stock(
-                    code=add_candidate["code"],
-                    company_name=add_candidate["company_name"],
-                    direction=add_candidate["direction"],
-                    timeframe=add_candidate["timeframe"],
-                    added_date=str(date.today()),
-                )
-                st.success(f"{add_label} を監視銘柄（{add_timeframe_label}）に追加しました")
+                # 既に保有中（未決済）の銘柄は、売買銘柄と監視銘柄の二重登録に
+                # なるため追加しない
+                if has_open_trade(add_candidate["code"]):
+                    st.error(
+                        f"{add_label} は既に保有中（未決済）の売買銘柄として"
+                        "登録されているため、監視銘柄には追加できません"
+                    )
+                else:
+                    add_watchlist_stock(
+                        code=add_candidate["code"],
+                        company_name=add_candidate["company_name"],
+                        direction=add_candidate["direction"],
+                        timeframe=add_candidate["timeframe"],
+                        added_date=str(date.today()),
+                    )
+                    st.success(f"{add_label} を監視銘柄（{add_timeframe_label}）に追加しました")
+    elif candidates or (lookup_result is not None and "error" not in lookup_result):
+        st.divider()
+        st.info(
+            "候補一覧の行を選択するか、個別銘柄検索で銘柄を選ぶと、"
+            "チャートを確認したうえで売買銘柄・監視銘柄に追加できます。"
+        )
 
 
-with tab_trades:
-    st.subheader("売買銘柄（トレード記録）")
+def _render_trades_section():
 
-    trades_timeframe = st.radio(
-        "時間足",
-        options=["daily", "weekly"],
-        format_func=lambda t: "日足" if t == "daily" else "週足",
-        horizontal=True,
-        key="trades_timeframe_filter",
-    )
+    """
+    売買銘柄タブを描画する
 
-    trades = [
-        t for t in get_all_trades() if t["timeframe"] == trades_timeframe
-    ]
+    日足・週足は分けず1つの表にまとめ、「時間足」列で見分ける。
+    合計損益・削除・監視銘柄への移動も日足/週足を問わず一括で扱う
+    """
+
+    trades = get_all_trades()
 
     if not trades:
         st.info(
             "まだ売買銘柄が登録されていません。"
             "「スキャン」タブの候補から追加してください。"
         )
-    else:
-        groups = group_by_year_and_month(trades)
+        return
 
-        for year_index, (year, year_pnl, month_groups) in enumerate(groups):
-            with st.expander(
-                f"{year}年（年間損益: {year_pnl:+,.0f}円）",
-                expanded=(year_index == 0),
-            ):
-                for month, month_pnl, month_trades in month_groups:
-                    st.markdown(f"**{month}月　月間損益: {month_pnl:+,.0f}円**")
+    groups = group_by_year_and_month(trades)
 
-                    display_df = pd.DataFrame(
-                        [
-                            {
-                                "コード": t["code"],
-                                "銘柄名": t["company_name"],
-                                "方向": DIRECTION_LABELS[t["direction"]],
-                                "時間足": TIMEFRAME_LABELS[t["timeframe"]],
-                                "取引日": t["trade_date"],
-                                "購入株価": t["entry_price"],
-                                "決済株価": t["exit_price"],
-                                "株数": t["quantity"],
-                                "損益": calculate_pnl(t),
-                            }
-                            for t in month_trades
-                        ],
-                        index=[t["id"] for t in month_trades],
+    for year_index, (year, year_pnl, month_groups) in enumerate(groups):
+        with st.expander(
+            f"{year}年（年間損益: {year_pnl:+,.0f}円）",
+            expanded=(year_index == 0),
+        ):
+            for month, month_pnl, month_trades in month_groups:
+                st.markdown(f"**{month}月　月間損益: {month_pnl:+,.0f}円**")
+
+                display_df = pd.DataFrame(
+                    [
+                        {
+                            "コード": t["code"],
+                            "銘柄名": t["company_name"],
+                            "方向": DIRECTION_LABELS[t["direction"]],
+                            "時間足": TIMEFRAME_LABELS[t["timeframe"]],
+                            "取引日": t["trade_date"],
+                            "購入株価": t["entry_price"],
+                            "決済株価": t["exit_price"],
+                            "株数": t["quantity"],
+                            "損益": calculate_pnl(t),
+                        }
+                        for t in month_trades
+                    ],
+                    index=[t["id"] for t in month_trades],
+                )
+
+                edited_df = st.data_editor(
+                    display_df,
+                    key=f"trade_editor_{year}_{month}",
+                    use_container_width=True,
+                    disabled=["コード", "銘柄名", "方向", "取引日", "損益"],
+                    column_config={
+                        "決済株価": st.column_config.NumberColumn(
+                            help="空欄のままなら未決済として扱われます"
+                        ),
+                        "時間足": st.column_config.SelectboxColumn(
+                            options=list(TIMEFRAME_LABELS.values()),
+                            help="日足/週足を間違えて登録した場合はここで修正できます",
+                        ),
+                    },
+                )
+
+                for trade in month_trades:
+                    row = edited_df.loc[trade["id"]]
+                    new_exit_price = (
+                        None if pd.isna(row["決済株価"]) else float(row["決済株価"])
                     )
+                    new_timeframe = TIMEFRAME_LABELS_INVERSE[row["時間足"]]
 
-                    edited_df = st.data_editor(
-                        display_df,
-                        key=f"trade_editor_{year}_{month}",
-                        use_container_width=True,
-                        disabled=["コード", "銘柄名", "方向", "取引日", "損益"],
-                        column_config={
-                            "決済株価": st.column_config.NumberColumn(
-                                help="空欄のままなら未決済として扱われます"
-                            ),
-                            "時間足": st.column_config.SelectboxColumn(
-                                options=list(TIMEFRAME_LABELS.values()),
-                                help="日足/週足を間違えて登録した場合はここで修正できます",
-                            ),
-                        },
-                    )
-
-                    for trade in month_trades:
-                        row = edited_df.loc[trade["id"]]
-                        new_exit_price = (
-                            None if pd.isna(row["決済株価"]) else float(row["決済株価"])
+                    if (
+                        row["購入株価"] != trade["entry_price"]
+                        or new_exit_price != trade["exit_price"]
+                        or row["株数"] != trade["quantity"]
+                        or new_timeframe != trade["timeframe"]
+                    ):
+                        update_trade(
+                            trade["id"],
+                            entry_price=float(row["購入株価"]),
+                            exit_price=new_exit_price,
+                            quantity=int(row["株数"]),
+                            timeframe=new_timeframe,
                         )
-                        new_timeframe = TIMEFRAME_LABELS_INVERSE[row["時間足"]]
+                        st.rerun()
 
-                        if (
-                            row["購入株価"] != trade["entry_price"]
-                            or new_exit_price != trade["exit_price"]
-                            or row["株数"] != trade["quantity"]
-                            or new_timeframe != trade["timeframe"]
-                        ):
-                            update_trade(
-                                trade["id"],
-                                entry_price=float(row["購入株価"]),
-                                exit_price=new_exit_price,
-                                quantity=int(row["株数"]),
-                                timeframe=new_timeframe,
-                            )
-                            st.rerun()
+    st.divider()
+    st.metric("全期間の損益合計", f"{total_pnl(trades):+,.0f}円")
 
-        st.divider()
-        st.metric("全期間の損益合計", f"{total_pnl(trades):+,.0f}円")
+    st.divider()
+    trade_action_options = {
+        f"{t['code']} {t['company_name']}｜{t['trade_date']}｜"
+        f"{DIRECTION_LABELS[t['direction']]}｜{TIMEFRAME_LABELS[t['timeframe']]}": t
+        for t in trades
+    }
+    selected_trade_label = st.selectbox(
+        "対象の取引を選択",
+        options=list(trade_action_options.keys()),
+        key="trade_action_select",
+    )
+    selected_trade = trade_action_options[selected_trade_label]
 
-        st.divider()
-        delete_trade_options = {
-            f"{t['code']} {t['company_name']}｜{t['trade_date']}｜"
-            f"{DIRECTION_LABELS[t['direction']]}": t["id"]
-            for t in trades
-        }
-        delete_trade_label = st.selectbox(
-            "削除する取引を選択", options=list(delete_trade_options.keys())
-        )
-        if st.button("選択した取引を削除"):
-            delete_trade(delete_trade_options[delete_trade_label])
+    st.markdown(f"###### {selected_trade['code']} {selected_trade['company_name']}")
+    _render_chart_block(
+        selected_trade["code"], selected_trade["timeframe"], key_prefix="trades"
+    )
+
+    col_delete, col_move = st.columns(2)
+
+    with col_delete:
+        if st.button(
+            "選択した取引を削除",
+            key="delete_trade_button",
+            use_container_width=True,
+        ):
+            delete_trade(selected_trade["id"])
+            st.rerun()
+
+    with col_move:
+        if st.button(
+            "選択した取引を監視銘柄に移動",
+            key="move_trade_button",
+            use_container_width=True,
+            help="登録を間違えた場合の修正用。この取引を削除し、"
+            "同じ銘柄・方向・時間足で監視銘柄に登録し直します",
+        ):
+            add_watchlist_stock(
+                code=selected_trade["code"],
+                company_name=selected_trade["company_name"],
+                direction=selected_trade["direction"],
+                timeframe=selected_trade["timeframe"],
+                added_date=str(date.today()),
+            )
+            delete_trade(selected_trade["id"])
             st.rerun()
 
 
-with tab_watchlist:
-    st.subheader("監視銘柄")
+def _render_watchlist_section():
 
-    watchlist_timeframe = st.radio(
-        "時間足",
-        options=["daily", "weekly"],
-        format_func=lambda t: "日足" if t == "daily" else "週足",
-        horizontal=True,
-        key="watchlist_timeframe_filter",
-    )
+    """
+    監視銘柄タブを描画する（_render_trades_sectionと同様、日足/週足は
+    「時間足」列で見分けるだけで表・合計・削除・移動は一括で扱う）
+    """
 
-    watchlist_stocks = [
-        w for w in get_all_watchlist_stocks() if w["timeframe"] == watchlist_timeframe
-    ]
+    watchlist_stocks = get_all_watchlist_stocks()
 
     if not watchlist_stocks:
         st.info(
             "まだ監視銘柄が登録されていません。"
             "「スキャン」タブの候補から追加してください。"
         )
-    else:
-        watchlist_display_df = pd.DataFrame(
-            [
-                {
-                    "コード": w["code"],
-                    "銘柄名": w["company_name"],
-                    "方向": DIRECTION_LABELS[w["direction"]],
-                    "時間足": TIMEFRAME_LABELS[w["timeframe"]],
-                    "追加日": w["added_date"],
-                }
-                for w in watchlist_stocks
-            ],
-            index=[w["id"] for w in watchlist_stocks],
-        )
+        return
 
-        edited_watchlist_df = st.data_editor(
-            watchlist_display_df,
-            key="watchlist_editor",
-            use_container_width=True,
-            disabled=["コード", "銘柄名", "方向", "追加日"],
-            column_config={
-                "時間足": st.column_config.SelectboxColumn(
-                    options=list(TIMEFRAME_LABELS.values()),
-                    help="日足/週足を間違えて登録した場合はここで修正できます",
-                ),
-            },
-        )
-
-        for stock in watchlist_stocks:
-            new_timeframe = TIMEFRAME_LABELS_INVERSE[
-                edited_watchlist_df.loc[stock["id"], "時間足"]
-            ]
-
-            if new_timeframe != stock["timeframe"]:
-                update_watchlist_timeframe(stock["id"], new_timeframe)
-                st.rerun()
-
-        st.divider()
-        delete_watchlist_options = {
-            f"{w['code']} {w['company_name']}（{w['added_date']}追加）": w["id"]
+    watchlist_display_df = pd.DataFrame(
+        [
+            {
+                "コード": w["code"],
+                "銘柄名": w["company_name"],
+                "方向": DIRECTION_LABELS[w["direction"]],
+                "時間足": TIMEFRAME_LABELS[w["timeframe"]],
+                "追加日": w["added_date"],
+            }
             for w in watchlist_stocks
-        }
-        delete_watchlist_label = st.selectbox(
-            "削除する監視銘柄を選択", options=list(delete_watchlist_options.keys())
-        )
-        if st.button("選択した監視銘柄を削除"):
-            delete_watchlist_stock(delete_watchlist_options[delete_watchlist_label])
+        ],
+        index=[w["id"] for w in watchlist_stocks],
+    )
+
+    edited_watchlist_df = st.data_editor(
+        watchlist_display_df,
+        key="watchlist_editor",
+        use_container_width=True,
+        disabled=["コード", "銘柄名", "方向", "追加日"],
+        column_config={
+            "時間足": st.column_config.SelectboxColumn(
+                options=list(TIMEFRAME_LABELS.values()),
+                help="日足/週足を間違えて登録した場合はここで修正できます",
+            ),
+        },
+    )
+
+    for stock in watchlist_stocks:
+        new_timeframe = TIMEFRAME_LABELS_INVERSE[
+            edited_watchlist_df.loc[stock["id"], "時間足"]
+        ]
+
+        if new_timeframe != stock["timeframe"]:
+            update_watchlist_timeframe(stock["id"], new_timeframe)
             st.rerun()
+
+    st.divider()
+    watchlist_action_options = {
+        f"{w['code']} {w['company_name']}（{TIMEFRAME_LABELS[w['timeframe']]}・"
+        f"{w['added_date']}追加）": w
+        for w in watchlist_stocks
+    }
+    selected_watchlist_label = st.selectbox(
+        "対象の監視銘柄を選択",
+        options=list(watchlist_action_options.keys()),
+        key="watchlist_action_select",
+    )
+    selected_watchlist_stock = watchlist_action_options[selected_watchlist_label]
+
+    st.markdown(
+        f"###### {selected_watchlist_stock['code']} {selected_watchlist_stock['company_name']}"
+    )
+    _render_chart_block(
+        selected_watchlist_stock["code"],
+        selected_watchlist_stock["timeframe"],
+        key_prefix="watchlist",
+    )
+
+    if st.button("選択した監視銘柄を削除", key="delete_watchlist_button"):
+        delete_watchlist_stock(selected_watchlist_stock["id"])
+        st.rerun()
+
+    st.markdown("##### 選択した監視銘柄を売買銘柄に移動")
+
+    with st.form("move_watchlist_to_trade_form"):
+        move_trade_date_input = st.date_input("取引日", value=date.today())
+        move_entry_price_input = st.number_input(
+            "購入株価", min_value=0.0, value=0.0
+        )
+        move_quantity_input = st.number_input(
+            "株数", min_value=1, value=100, step=100
+        )
+        move_exit_price_input = st.number_input(
+            "決済株価（利確/損切。未決済なら0のまま）",
+            min_value=0.0,
+            value=0.0,
+        )
+
+        if st.form_submit_button("売買銘柄に移動"):
+            add_trade(
+                code=selected_watchlist_stock["code"],
+                company_name=selected_watchlist_stock["company_name"],
+                direction=selected_watchlist_stock["direction"],
+                timeframe=selected_watchlist_stock["timeframe"],
+                trade_date=str(move_trade_date_input),
+                entry_price=move_entry_price_input,
+                exit_price=(
+                    move_exit_price_input if move_exit_price_input > 0 else None
+                ),
+                quantity=int(move_quantity_input),
+            )
+            delete_watchlist_stock(selected_watchlist_stock["id"])
+            st.rerun()
+
+
+with tab_trades:
+    st.subheader("売買銘柄（トレード記録）")
+
+    _render_trades_section()
+
+
+with tab_watchlist:
+    st.subheader("監視銘柄")
+
+    _render_watchlist_section()

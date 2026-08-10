@@ -140,6 +140,30 @@ def delete_trade(trade_id):
     conn.close()
 
 
+def has_open_trade(code):
+    """
+    指定銘柄コードに未決済（保有中）のトレードがあるかどうか
+
+    監視銘柄への追加時、既に保有中の銘柄を重複して監視登録しないための
+    チェックに使う（決済済みのトレードは対象外）
+    """
+
+    conn = create_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT 1 FROM trades WHERE code = ? AND exit_price IS NULL LIMIT 1",
+        (code,)
+    )
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row is not None
+
+
 def get_all_trades():
     """
     売買銘柄を全件取得する
