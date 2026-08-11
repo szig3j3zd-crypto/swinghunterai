@@ -120,7 +120,10 @@ Indicator Layer
 テクニカル指標を計算する。
 
 初期実装
+MA3
 MA5
+MA7
+MA10
 MA20
 MA60
 MA300

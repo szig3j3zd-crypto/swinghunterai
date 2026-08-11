@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from config.config import MAX_PRICE, MIN_MARKET_CAP, MIN_PRICE, MIN_VOLUME
 from database.stock_master_reader import get_active_stocks
@@ -44,6 +45,7 @@ from ui.chart import (
     PLOTLY_CONFIG,
     PLOTLY_CURSOR_OVERRIDE_CSS,
     build_price_chart,
+    build_scroll_sync_script,
     compute_visible_window,
 )
 
@@ -71,15 +73,26 @@ DIRECTION_LABELS = {"long": "ロング（買い）", "short": "ショート（�
 TIMEFRAME_LABELS = {"daily": "日足", "weekly": "週足"}
 TIMEFRAME_LABELS_INVERSE = {v: k for k, v in TIMEFRAME_LABELS.items()}
 
-# チャートの表示期間の選択肢。「n年」は1〜10年を1年刻み
+# チャートの表示期間（読み込む・横スクロールできる範囲全体）の選択肢。
+# 「n年」は1〜10年を1年刻み
 CHART_PERIOD_OPTIONS = ["1ヶ月", "3ヶ月", "6ヶ月"] + [f"{n}年" for n in range(1, 11)]
 
-# 時間足ごとのデフォルト表示期間（日足は直近半年、週足は直近3年が読み取りやすいため）
-CHART_PERIOD_DEFAULT = {"daily": "6ヶ月", "weekly": "3年"}
+# チャート画面に一度に表示する幅（表示期間の範囲内を、この幅を保ったまま
+# 横スクロールして見る）の選択肢。「nヶ月」は3〜11ヶ月を1ヶ月刻み、
+# 「n年」は1〜5年を1年刻み
+CHART_DISPLAY_WIDTH_OPTIONS = (
+    [f"{n}ヶ月" for n in range(3, 12)] + [f"{n}年" for n in range(1, 6)]
+)
 
-# 日単位で見たい短い表示期間では「月/日」、それより長い期間では「年/月」で
+# 時間足ごとのデフォルト表示期間・表示幅（日足は直近半年、週足は直近3年が
+# 読み取りやすいため。表示幅も同じ値をデフォルトにすることで、初期表示は
+# 従来どおり期間全体がそのまま見える見た目になる）
+CHART_PERIOD_DEFAULT = {"daily": "6ヶ月", "weekly": "3年"}
+CHART_DISPLAY_WIDTH_DEFAULT = {"daily": "6ヶ月", "weekly": "3年"}
+
+# 日単位で見たい短い表示幅では「月/日」、それより長い表示幅では「年/月」で
 # 出来高チャート下の日付軸ラベルを表示する
-CHART_TICK_FORMAT_SHORT_PERIODS = {"1ヶ月", "3ヶ月"}
+CHART_TICK_FORMAT_SHORT_WIDTHS = {"3ヶ月"}
 
 
 def _period_label_to_offset(label):
@@ -179,7 +192,10 @@ def _on_candidate_table_select(table_key, candidates_list):
 # session_stateの値を毎回value=に渡して手動で維持する
 CHART_DISPLAY_PREF_DEFAULTS = {
     "chart_pref_show_candlestick": True,
+    "chart_pref_show_sma3": False,
     "chart_pref_show_sma5": True,
+    "chart_pref_show_sma7": False,
+    "chart_pref_show_sma10": False,
     "chart_pref_show_sma20": True,
     "chart_pref_show_sma60": True,
     "chart_pref_show_volume": True,
@@ -252,6 +268,20 @@ def _render_focus_block(label, result, code, chart_timeframe):
     _render_chart_block(code, chart_timeframe, key_prefix="scan")
 
 
+@st.cache_data(ttl=3600)
+def _get_cached_chart_data(code, timeframe):
+
+    """
+    get_stock_chart_data()のキャッシュ付きラッパー
+
+    表示期間・表示幅・チェックボックスの切替はStreamlitの再実行を伴うが、
+    そのたびにDB読込・移動平均/出来高の再計算をやり直すと重く感じるため、
+    同じ(code, timeframe)の結果をキャッシュして再描画を軽くする
+    """
+
+    return get_stock_chart_data(code, timeframe=timeframe)
+
+
 def _render_chart_block(code, chart_timeframe, key_prefix):
 
     """
@@ -265,21 +295,19 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
 
     st.markdown("##### 株価チャート")
 
-    chart_df = get_stock_chart_data(code, timeframe=chart_timeframe)
+    chart_df = _get_cached_chart_data(code, chart_timeframe)
     latest_bar = chart_df.iloc[-1]
 
-    # 表示期間（短め）とチェックボックスを1行にまとめる。
-    # gap="xxsmall"と、内容ギリギリの列幅比率＋末尾の空列で、
-    # できるだけ隙間を詰めて左に寄せる
-    # vertical_alignment="bottom"で、ラベル行が無いチェックボックスを
-    # 表示期間のセレクトボックス（ラベル+入力欄）の入力欄の高さに揃える
-    period_col, cb_candle, cb_sma5, cb_sma20, cb_sma60, cb_volume, cb_hover, _spacer = (
-        st.columns(
-            [1.3, 1.5, 1, 1, 1, 1, 1.5, 4], gap="xxsmall", vertical_alignment="bottom"
-        )
+    # 表示期間（横スクロールできる範囲全体）と表示幅（画面に一度に表示する
+    # 幅。この幅を保ったまま表示期間の範囲内を横スクロールする）を1行、
+    # チェックボックスをもう1行にまとめる。gap="xxsmall"と、内容ギリギリの
+    # 列幅比率＋末尾の空列で、できるだけ隙間を詰めて左に寄せる
+    period_col, width_col, _period_spacer = st.columns(
+        [1.3, 1.3, 5], gap="xxsmall", vertical_alignment="bottom"
     )
-    # 表示期間も同様に、ウィジェット自身のkeyだけでなく独立したsession_stateで
-    # 現在値を管理し、このブロックが描画されないrunを挟んでも維持する
+    # 表示期間・表示幅は、ウィジェット自身のkeyだけでなく独立した
+    # session_stateで現在値を管理し、このブロックが描画されないrunを
+    # 挟んでも維持する
     period_pref_key = f"chart_period_pref_{key_prefix}_{chart_timeframe}"
     with period_col:
         period_label = st.selectbox(
@@ -291,12 +319,48 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             key=f"chart_period_select_{key_prefix}_{chart_timeframe}",
         )
     st.session_state[period_pref_key] = period_label
+
+    width_pref_key = f"chart_display_width_pref_{key_prefix}_{chart_timeframe}"
+    with width_col:
+        display_width_label = st.selectbox(
+            "チャート表示幅",
+            options=CHART_DISPLAY_WIDTH_OPTIONS,
+            index=CHART_DISPLAY_WIDTH_OPTIONS.index(
+                st.session_state.get(
+                    width_pref_key, CHART_DISPLAY_WIDTH_DEFAULT[chart_timeframe]
+                )
+            ),
+            key=f"chart_display_width_select_{key_prefix}_{chart_timeframe}",
+        )
+    st.session_state[width_pref_key] = display_width_label
+
+    # vertical_alignment="bottom"で、ラベル行が無いチェックボックスを
+    # チェックボックス自体の高さに揃える。列幅比率は各チェックボックスの
+    # ラベル文字数に応じて調整する。"10日線"・"20日線"・"60日線"（数字2桁）・
+    # "出来高"（漢字3文字）は"3日線"等（数字1桁）より横幅が必要で、
+    # 同じ比率のままだと折り返してラベルが2行になってしまうため、
+    # 他より広めの比率を割り当てる
+    (
+        cb_candle, cb_sma3, cb_sma5, cb_sma7, cb_sma10,
+        cb_sma20, cb_sma60, cb_volume, cb_hover, _cb_spacer,
+    ) = (
+        st.columns(
+            [1.4, 0.9, 0.9, 0.9, 1.2, 1.2, 1.2, 1.1, 1.3, 4],
+            gap="xxsmall", vertical_alignment="bottom",
+        )
+    )
     with cb_candle:
         show_candlestick = _persistent_checkbox(
             "ローソク足", "chart_pref_show_candlestick", key_prefix
         )
+    with cb_sma3:
+        show_sma3 = _persistent_checkbox("3日線", "chart_pref_show_sma3", key_prefix)
     with cb_sma5:
         show_sma5 = _persistent_checkbox("5日線", "chart_pref_show_sma5", key_prefix)
+    with cb_sma7:
+        show_sma7 = _persistent_checkbox("7日線", "chart_pref_show_sma7", key_prefix)
+    with cb_sma10:
+        show_sma10 = _persistent_checkbox("10日線", "chart_pref_show_sma10", key_prefix)
     with cb_sma20:
         show_sma20 = _persistent_checkbox("20日線", "chart_pref_show_sma20", key_prefix)
     with cb_sma60:
@@ -308,19 +372,28 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             "詳細情報", "chart_pref_show_hover_info", key_prefix
         )
 
-    # 高値・安値・始値・終値は、Streamlit要素としてではなく、
-    # チャート凡例の右横（同じ行）に来るようPlotly側の注釈として埋め込む
+    # 高値・安値・始値・終値は、チェックボックス行とチャートの間に
+    # 専用の行として表示する。以前はPlotly側の注釈として凡例の右横に
+    # 埋め込んでいたが、移動平均線の表示切替が増えて凡例が伸びると
+    # 注釈と重なって読めなくなるため、独立したStreamlit要素に変更した
     ohlc_text = (
         f"高値: {latest_bar['high']:,.1f}　"
         f"安値: {latest_bar['low']:,.1f}　"
         f"始値: {latest_bar['open']:,.1f}　"
         f"終値: {latest_bar['close']:,.1f}"
     )
+    st.markdown(
+        f'<div style="font-size:15px;color:#31333F;">{ohlc_text}</div>',
+        unsafe_allow_html=True,
+    )
 
     visible_ma = [
         key
         for key, show in [
+            ("sma3", show_sma3),
             ("sma5", show_sma5),
+            ("sma7", show_sma7),
+            ("sma10", show_sma10),
             ("sma20", show_sma20),
             ("sma60", show_sma60),
         ]
@@ -328,45 +401,74 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     ]
 
     last_date = chart_df["date"].max()
-    start_date = last_date - _period_label_to_offset(period_label)
+
+    # 表示期間の範囲外のデータはチャートに渡さない。これにより、横スクロールで
+    # 移動できる範囲そのものが表示期間で区切られる（表示期間より古いデータは
+    # そもそもチャート上に存在しないため、それより先へはスクロールできない）
+    period_start = last_date - _period_label_to_offset(period_label)
+    chart_df_in_period = (
+        chart_df[chart_df["date"] >= period_start].reset_index(drop=True)
+    )
+    total_bar_count = len(chart_df_in_period)
+
+    # 表示幅（カレンダー上の期間）を、実際のローソク足の本数に変換する
+    width_start_date = last_date - _period_label_to_offset(display_width_label)
+    visible_bar_count = min(
+        max(int((chart_df_in_period["date"] >= width_start_date).sum()), 1),
+        total_bar_count,
+    )
+    max_scroll_offset = total_bar_count - visible_bar_count
+
+    # Streamlitが描画する初期表示は常に最新側（表示幅ぶん）。そこから先の
+    # 横スクロールはPlotly側の操作（チャート上のドラッグ、チャート下の
+    # レンジスライダー、矢印キー）に任せ、ブラウザ側だけで完結させる
+    # （ui.chart.build_scroll_sync_script）ため、Streamlitの再実行は伴わない
+    start_offset = max_scroll_offset
+    start_index = start_offset
+    end_index = start_offset + visible_bar_count - 1
+    window_start_date = chart_df_in_period["date"].iloc[start_index]
+    window_end_date = chart_df_in_period["date"].iloc[end_index]
     x_range, y_range, volume_range = compute_visible_window(
-        chart_df, start_date, last_date
+        chart_df_in_period, window_start_date, window_end_date
     )
 
     st.plotly_chart(
         build_price_chart(
-            chart_df,
+            chart_df_in_period,
             show_candlestick=show_candlestick,
             visible_ma=visible_ma,
             show_volume=show_volume,
             x_range=x_range,
             y_range=y_range,
             volume_range=volume_range,
-            ohlc_text=ohlc_text,
             show_hover_info=show_hover_info,
             tick_format=(
                 "%m/%d"
-                if period_label in CHART_TICK_FORMAT_SHORT_PERIODS
+                if display_width_label in CHART_TICK_FORMAT_SHORT_WIDTHS
                 else "%Y/%m"
             ),
             # uirevisionとkey（下）はPlotlyの標準的な「ズーム状態を維持する」
             # 手法だが、st.plotly_chartでは効かず、チェックボックス操作等の
-            # 再読み込みのたびにズームがリセットされる（Streamlit側の制限）。
-            # 表示期間はこの後のx_range/y_rangeで都度綺麗にフィットさせているため、
-            # 実害は小さいが、手動ズーム→他の操作、の順で操作するとズームは消える
-            uirevision=f"{code}-{chart_timeframe}-{period_label}",
+            # 再読み込みのたびに操作前の状態がリセットされる（Streamlit側の
+            # 制限）。表示幅はこの後のx_range/y_rangeで都度綺麗にフィット
+            # させているため実害は小さいが、手動でのドラッグ→他の操作、の順で
+            # 操作するとドラッグした位置は消える
+            uirevision=f"{code}-{chart_timeframe}-{period_label}-{display_width_label}",
         ),
         use_container_width=True,
         config=PLOTLY_CONFIG,
         key=f"price_chart_{key_prefix}_{code}",
     )
-    st.caption(
-        "上のプルダウンで表示期間を切り替えられます（価格・出来高の軸は"
-        "選択期間に自動でフィットします）。モードバーの「直線を描画」アイコンで"
-        "支持線・抵抗線を描画できます。描いた線をクリックすると選択され、"
-        "端点をドラッグして編集、「選択した図形を削除」アイコンまたは"
-        "Deleteキーで削除できます（他の操作で再読み込みされると描いた線・"
-        "手動でのズームは消えます。表示期間を変えたい場合はプルダウンをご利用ください）。"
+    components.html(
+        build_scroll_sync_script(
+            chart_df_in_period["date"],
+            chart_df_in_period["high"],
+            chart_df_in_period["low"],
+            chart_df_in_period["volume"],
+            visible_bar_count,
+            start_offset,
+        ),
+        height=0,
     )
 
 

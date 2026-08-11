@@ -28,6 +28,33 @@ def test_row_count_is_unchanged():
     assert len(result) == len(df)
 
 
+def test_sma3_matches_manual_average():
+    df = _price_series(4)
+
+    result = calculate_moving_average(df)
+
+    # close = [1, 2, 3, 4] -> 直近3件の平均
+    assert result["sma3"].iloc[-1] == (2 + 3 + 4) / 3
+
+
+def test_sma7_matches_manual_average():
+    df = _price_series(8)
+
+    result = calculate_moving_average(df)
+
+    # close = [1..8] -> 直近7件の平均
+    assert result["sma7"].iloc[-1] == sum(range(2, 9)) / 7
+
+
+def test_sma10_matches_manual_average():
+    df = _price_series(11)
+
+    result = calculate_moving_average(df)
+
+    # close = [1..11] -> 直近10件の平均
+    assert result["sma10"].iloc[-1] == sum(range(2, 12)) / 10
+
+
 def test_sma20_matches_manual_average():
     df = _price_series(20)
 

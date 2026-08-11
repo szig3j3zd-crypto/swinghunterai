@@ -28,9 +28,27 @@ def calculate_moving_average(df):
 
 
     # 移動平均
+    df["sma3"] = (
+        df["close"]
+        .rolling(window=3)
+        .mean()
+    )
+
     df["sma5"] = (
         df["close"]
         .rolling(window=5)
+        .mean()
+    )
+
+    df["sma7"] = (
+        df["close"]
+        .rolling(window=7)
+        .mean()
+    )
+
+    df["sma10"] = (
+        df["close"]
+        .rolling(window=10)
         .mean()
     )
 

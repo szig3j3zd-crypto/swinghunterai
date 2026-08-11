@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -11,12 +13,18 @@ VOLUME_COLOR = "#e6b800"
 
 # 短期・中期・長期の順で色を固定する（周期的に割り当てない）
 MA_COLORS = {
+    "sma3": "#8fd14f",
     "sma5": "#e6b800",
+    "sma7": "#ff69b4",
+    "sma10": "#9467bd",
     "sma20": "#d62728",
     "sma60": "#1f5fa8",
 }
 MA_LABELS = {
+    "sma3": "3日線",
     "sma5": "5日線",
+    "sma7": "7日線",
+    "sma10": "10日線",
     "sma20": "20日線",
     "sma60": "60日線",
 }
@@ -168,7 +176,7 @@ def _build_hover_text(df, visible_ma, show_volume):
 
 def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True,
                        x_range=None, y_range=None, volume_range=None,
-                       ohlc_text=None, uirevision=None, show_hover_info=True,
+                       uirevision=None, show_hover_info=True,
                        tick_format="%Y/%m/%d"):
 
     """
@@ -177,13 +185,15 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
     Parameters
     ----------
     df
-        date, open, high, low, close, volume, sma5, sma20, sma60 列を持つDataFrame
+        date, open, high, low, close, volume, sma3, sma5, sma7, sma10, sma20,
+        sma60 列を持つDataFrame
 
     show_candlestick
         ローソク足を表示するか
 
     visible_ma
-        表示する移動平均線のキー（"sma5", "sma20", "sma60"）のタプル/リスト
+        表示する移動平均線のキー（"sma3", "sma5", "sma7", "sma10", "sma20",
+        "sma60"）のタプル/リスト
 
     show_volume
         出来高サブプロットを表示するか
@@ -196,9 +206,6 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
 
     volume_range
         初期表示する出来高軸の範囲 [下限, 上限]。Noneなら自動
-
-    ohlc_text
-        凡例の右側に表示する高値・安値・始値・終値などのテキスト。Noneなら非表示
 
     uirevision
         この値が前回描画時と同じなら、ユーザーが手動でズーム/パンした状態を
@@ -318,11 +325,16 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
         )
 
     fig.update_layout(
-        height=680 if show_volume else 500,
+        height=760 if show_volume else 580,
         margin=dict(l=40, r=20, t=10, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         xaxis_rangeslider_visible=False,
-        dragmode="zoom",
+        # チャート上のドラッグでも横スクロールできるよう、既定のドラッグ操作を
+        # 矩形ズームではなくパン（横移動）にする。表示期間の範囲全体分の
+        # データを常にトレースへ渡しているため、パン自体はブラウザ側で完結し
+        # （Streamlitの再実行を伴わない）ため滑らかに動く。ズームしたい場合は
+        # モードバーの「ズーム」アイコンで切り替えられる
+        dragmode="pan",
         # "closest"はカーソルとの2次元（x・y）距離が最も近い点を拾うため、
         # カーソルがトレースの線から縦に離れた位置にあると、縦の点線
         # （spikesnap="cursor"でカーソルのx座標そのものに追従）とは
@@ -372,19 +384,259 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
     if show_volume and volume_range is not None:
         fig.update_yaxes(range=volume_range, row=2, col=1)
 
-    if ohlc_text:
-        # 凡例のすぐ右（モードバーのアイコンとは被らない位置）に表示する
-        fig.add_annotation(
-            text=ohlc_text,
-            xref="paper",
-            yref="paper",
-            x=0.35,
-            y=1.01,
-            xanchor="left",
-            yanchor="bottom",
-            showarrow=False,
-            # Streamlitの標準テキストの見た目（濃色・読みやすいサイズ）に合わせる
-            font=dict(size=15, color="#31333F"),
-        )
+    # Plotly標準のレンジスライダー（一番下のサブプロットに、全期間分の
+    # ミニチャート＋現在の表示範囲を示す枠を表示する）を付ける。枠を
+    # ドラッグするとチャート本体と自動的に同期してスクロールする
+    # （同じx軸を参照しているため、追加のJavaScriptなしでPlotly標準機能
+    # だけで完結する）
+    rangeslider_row = 2 if show_volume else 1
+    fig.update_xaxes(rangeslider_visible=True, row=rangeslider_row, col=1)
+    if show_volume:
+        fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
 
     return fig
+
+
+def build_scroll_sync_script(bar_dates, highs, lows, volumes,
+                              visible_bar_count, initial_start_index):
+
+    """
+    左右矢印キーでのチャートスクロールと、表示範囲変更時の価格軸・出来高軸の
+    自動フィットを行うJavaScriptを組み立てる
+
+    st.components.v1.html(...)でst.plotly_chartの直後に埋め込む想定。
+    横スクロール自体は、チャート上のマウスドラッグ（Plotly標準の
+    dragmode="pan"）と、チャート下のPlotly標準レンジスライダー
+    （build_price_chartのrangeslider_visible=True）のどちらもPlotly標準
+    機能でチャート本体と自動的に同期するため、このscript側で同期を取る
+    必要はない。このscriptが追加で行うのは次の2点
+
+    - 左右矢印キーでのローソク足1本分ずつのスクロール（Streamlitの
+      再実行を伴わず、ブラウザ側でPlotly.relayoutを直接呼ぶ）
+    - 表示範囲が変わるたびに（ドラッグ・レンジスライダー・矢印キーの
+      いずれが原因でも）、その範囲内の高値・安値・出来高から価格軸・
+      出来高軸のレンジを自動で再フィットする
+      （compute_visible_windowと同じ計算をブラウザ側で再現）
+
+    Parameters
+    ----------
+    bar_dates
+        表示期間内の全ローソク足の日付（date列、日付順）。矢印キーで
+        何日分移動するかをこの実データから引くため、営業日以外
+        （土日等）は自動的に読み飛ばされる
+
+    highs, lows, volumes
+        bar_datesと同じ並びの高値・安値・出来高。表示範囲変更時の
+        価格軸・出来高軸の自動フィットに使う
+
+    visible_bar_count
+        チャート表示幅に相当する本数（表示するローソク足の本数）
+
+    initial_start_index
+        現在（Streamlitが最後に描画した時点）の表示窓の左端が、
+        bar_dates の何番目か。矢印キーはここを起点に動かす
+
+    Returns
+    -------
+    html
+        st.components.v1.html()にそのまま渡せるHTML文字列
+    """
+
+    dates_json = json.dumps([str(d) for d in bar_dates])
+    highs_json = json.dumps([float(v) for v in highs])
+    lows_json = json.dumps([float(v) for v in lows])
+    volumes_json = json.dumps([float(v) for v in volumes])
+
+    return f"""
+    <script>
+    (function() {{
+        // このscriptを埋め込んだiframe（window.frameElement）の直前にある
+        // Plotlyチャートdivを探す。IDを直接指定できない（Streamlitが
+        // 内部で採番するため）ので、DOM上の前後関係だけで判定する
+        function findPlotDiv() {{
+            const myFrame = window.frameElement;
+            if (!myFrame) return null;
+            const doc = window.parent.document;
+            const plots = doc.querySelectorAll(".js-plotly-plot");
+            let best = null;
+            plots.forEach(function(p) {{
+                const relToFrame = p.compareDocumentPosition(myFrame);
+                const pIsBeforeFrame = (relToFrame & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+                if (!pIsBeforeFrame) return;
+                if (!best) {{
+                    best = p;
+                    return;
+                }}
+                const relToBest = best.compareDocumentPosition(p);
+                const pIsAfterBest = (relToBest & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+                if (pIsAfterBest) {{
+                    best = p;
+                }}
+            }});
+            return best;
+        }}
+
+        // barDatesの何番目が指定した時刻（ミリ秒）に最も近いかを二分探索で求める
+        function lowerBound(sortedMs, targetMs) {{
+            let lo = 0, hi = sortedMs.length;
+            while (lo < hi) {{
+                const mid = (lo + hi) >> 1;
+                if (sortedMs[mid] < targetMs) {{
+                    lo = mid + 1;
+                }} else {{
+                    hi = mid;
+                }}
+            }}
+            return lo;
+        }}
+
+        function computeYRanges(scrollState, startIndex) {{
+            const endIndex = Math.min(
+                startIndex + scrollState.visibleBarCount - 1,
+                scrollState.barDates.length - 1
+            );
+            let lowMin = Infinity;
+            let highMax = -Infinity;
+            let volMax = -Infinity;
+            for (let i = startIndex; i <= endIndex; i++) {{
+                if (scrollState.lows[i] < lowMin) lowMin = scrollState.lows[i];
+                if (scrollState.highs[i] > highMax) highMax = scrollState.highs[i];
+                if (scrollState.volumes[i] > volMax) volMax = scrollState.volumes[i];
+            }}
+            const padding = (highMax - lowMin) * 0.04 || highMax * 0.01;
+            return {{
+                yRange: [lowMin - padding, highMax + padding],
+                volRange: [0, volMax * 1.04],
+            }};
+        }}
+
+        function setup(gd) {{
+            // スキャン/売買銘柄/監視銘柄タブが同時にチャートを表示している
+            // ケースがあるため、本数・現在位置などの状態はグローバルではなく
+            // 各チャートのdivに直接持たせ、チャート同士が干渉しないようにする
+            const barDates = {dates_json};
+            gd.__swingHunterScroll = {{
+                barDates: barDates,
+                barTimestamps: barDates.map(function(d) {{ return new Date(d).getTime(); }}),
+                highs: {highs_json},
+                lows: {lows_json},
+                volumes: {volumes_json},
+                visibleBarCount: {int(visible_bar_count)},
+                startIndex: {int(initial_start_index)},
+                maxStartIndex: Math.max(barDates.length - {int(visible_bar_count)}, 0),
+            }};
+
+            // マウスが乗っているチャートを「矢印キーの対象」として覚えておく
+            function markActive() {{
+                window.parent.__swingHunterActiveChart = gd;
+            }}
+            gd.addEventListener("mouseenter", markActive);
+            if (gd.matches(":hover")) {{
+                markActive();
+            }}
+
+            // マウスドラッグ（Plotly標準のdragmode="pan"）・レンジスライダー・
+            // 矢印キーのいずれでx軸レンジが変わった場合も、Plotlyが発火する
+            // plotly_relayoutイベントを起点に価格軸・出来高軸を再フィット
+            // する。同じ関数から呼ぶ自分自身のy軸更新（Plotly.relayout）が
+            // 再度plotly_relayoutを発火させても、そちらはxaxis側のキーを
+            // 含まないため無限ループにはならない
+            if (!gd.__swingHunterRelayoutBound) {{
+                gd.__swingHunterRelayoutBound = true;
+                gd.on("plotly_relayout", function(eventdata) {{
+                    const xChanged = Object.keys(eventdata).some(function(k) {{
+                        return k.indexOf("xaxis.range") === 0;
+                    }});
+                    if (!xChanged) return;
+
+                    const scrollState = gd.__swingHunterScroll;
+                    if (!scrollState) return;
+                    const curRange = gd._fullLayout && gd._fullLayout.xaxis
+                        ? gd._fullLayout.xaxis.range : null;
+                    if (!curRange) return;
+
+                    const startMs = new Date(curRange[0]).getTime();
+                    let startIndex = lowerBound(scrollState.barTimestamps, startMs);
+                    startIndex = Math.max(0, Math.min(startIndex, scrollState.maxStartIndex));
+                    scrollState.startIndex = startIndex;
+
+                    const ranges = computeYRanges(scrollState, startIndex);
+                    window.parent.Plotly.relayout(gd, {{
+                        "yaxis.range": ranges.yRange,
+                        "yaxis2.range": ranges.volRange,
+                    }});
+                }});
+            }}
+
+            // 矢印キーのリスナーは常にこのチャート（この再描画）の分だけを
+            // 残す。「一度だけ登録して使い回す」実装だと、以前のリスナーは
+            // その時のcomponents.html用iframe（DOMから削除されると実行
+            // コンテキストごと破棄される）内で作られたクロージャのままに
+            // なり、次の再描画でそのiframeが消えた後は矢印キーを押しても
+            // 無反応になってしまう（前回実装で実際に発生した不具合）。
+            // 実際にどのチャートを動かすかは押された瞬間の「マウスが
+            // 乗っているチャート」（__swingHunterActiveChart）を都度参照
+            // して決める
+            if (window.parent.__swingHunterScrollKeyHandler) {{
+                window.parent.document.removeEventListener(
+                    "keydown", window.parent.__swingHunterScrollKeyHandler, true
+                );
+            }}
+
+            // capture: trueでバブリング前（キャプチャフェーズ）に取る。
+            // フォーカスがテキスト系input（表示期間・表示幅のセレクト
+            // ボックス等、選択後もフォーカスが残り続ける）にある状態だと、
+            // そのinput自身がカーソル移動のため矢印キーのbubbleを止めて
+            // しまい、document（bubbleフェーズ）まで届かないことがある
+            const keydownHandler = function(e) {{
+                if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+
+                const target = window.parent.__swingHunterActiveChart;
+                if (!target || !target.__swingHunterScroll || !window.parent.Plotly) {{
+                    return;
+                }}
+                const scrollState = target.__swingHunterScroll;
+
+                let nextIndex;
+                if (e.key === "ArrowLeft") {{
+                    nextIndex = Math.max(scrollState.startIndex - 1, 0);
+                }} else {{
+                    nextIndex = Math.min(scrollState.startIndex + 1, scrollState.maxStartIndex);
+                }}
+                const endIndex = Math.min(
+                    nextIndex + scrollState.visibleBarCount - 1,
+                    scrollState.barDates.length - 1
+                );
+                // startIndexの更新自体はplotly_relayoutハンドラ側でも
+                // 行われるが、ここで即時に反映しておくことで連続で矢印キーを
+                // 押したときにも正しい起点から1本ずつ動かせる
+                scrollState.startIndex = nextIndex;
+                window.parent.Plotly.relayout(target, {{
+                    "xaxis.range": [
+                        scrollState.barDates[nextIndex],
+                        scrollState.barDates[endIndex],
+                    ],
+                }});
+                e.preventDefault();
+            }};
+            window.parent.__swingHunterScrollKeyHandler = keydownHandler;
+            window.parent.document.addEventListener("keydown", keydownHandler, true);
+        }}
+
+        // st.plotly_chart側の描画は非同期のため、このscriptが先に動いて
+        // チャートdivがまだ存在しないことがある。見つかるまで短い間隔で
+        // 探し直す（最大5秒。それでも見つからなければ諦める）
+        let attempts = 0;
+        const timer = setInterval(function() {{
+            attempts += 1;
+            const gd = findPlotDiv();
+            if (gd) {{
+                clearInterval(timer);
+                setup(gd);
+            }} else if (attempts > 50) {{
+                clearInterval(timer);
+            }}
+        }}, 100);
+    }})();
+    </script>
+    """
