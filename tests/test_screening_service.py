@@ -110,3 +110,9 @@ def test_format_reason_uses_short_labels_for_short_direction():
     }
 
     assert format_reason(candidate) == "並び順＋完全デッドクロス＋並走下降"
+
+
+def test_format_reason_uses_dead_cross_label_for_short_golden_cross_module():
+    candidate = {"modules": ["golden_cross"], "bounce_number": None, "direction": "short"}
+
+    assert format_reason(candidate) == "デッドクロス"

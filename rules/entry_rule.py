@@ -2,7 +2,12 @@ import pandas as pd
 
 from analysis.half_signal import detect_half_signal
 from analysis.ma_bounce import detect_bounce
-from analysis.ma_cross import detect_perfect_dead_cross, detect_perfect_golden_cross
+from analysis.ma_cross import (
+    detect_dead_cross,
+    detect_golden_cross,
+    detect_perfect_dead_cross,
+    detect_perfect_golden_cross,
+)
 from analysis.ma_trend import (
     get_current_trend_period,
     is_long_trend_series,
@@ -19,7 +24,9 @@ from rules.exit_rule import (
 from rules.screening_filters import passes_price_filter, passes_volume_filter
 from scoring.entry_score import calculate_total_score
 
-EVENT_MODULES = ("perfect_golden_cross", "bounce", "parallel_rise", "half_signal")
+EVENT_MODULES = (
+    "golden_cross", "perfect_golden_cross", "bounce", "parallel_rise", "half_signal",
+)
 VALID_MODULES = ("ma_order",) + EVENT_MODULES
 
 
@@ -45,9 +52,9 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
 
     modules
         使用するモジュール名のリスト（1つ以上必須）。
-        "ma_order"（並び順・状態型）、"perfect_golden_cross"（完全ゴールデンクロス）、
-        "bounce"（反発）、"parallel_rise"（並走上昇）、"half_signal"（半分シグナル）
-        から選択する
+        "ma_order"（並び順・状態型）、"golden_cross"（ゴールデンクロス）、
+        "perfect_golden_cross"（完全ゴールデンクロス）、"bounce"（反発）、
+        "parallel_rise"（並走上昇）、"half_signal"（半分シグナル）から選択する
 
     ma_mode
         "ma_order"選択時の並び順バリエーション。"full"（5>20>60、デフォルト）
@@ -110,6 +117,12 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
 
     event_series = {}
     watch_series = None
+
+    if "golden_cross" in modules:
+        if direction == "long":
+            event_series["golden_cross"] = detect_golden_cross(df, "sma5", "sma20")
+        else:
+            event_series["golden_cross"] = detect_dead_cross(df, "sma5", "sma20")
 
     if "perfect_golden_cross" in modules:
         if direction == "long":

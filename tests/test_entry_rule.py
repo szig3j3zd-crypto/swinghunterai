@@ -197,6 +197,51 @@ def test_short_perfect_dead_cross_is_candidate():
     assert result["is_entry_candidate"] is True
 
 
+def test_golden_cross_module_fires_even_when_ma20_is_declining():
+    # 完全ゴールデンクロスと違い、MA20が下降中のクロスも候補にする
+    df = _base_df(
+        sma5=[90, 96],
+        sma20=[100, 95],
+        close=[90.0, 96.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["golden_cross"], **NO_PRICE_FILTER
+    )
+
+    assert result["is_entry_candidate"] is True
+
+
+def test_perfect_golden_cross_does_not_fire_when_ma20_is_declining():
+    # 同じデータでも、完全ゴールデンクロス（MA20上向き必須）は候補にならない
+    df = _base_df(
+        sma5=[90, 96],
+        sma20=[100, 95],
+        close=[90.0, 96.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["perfect_golden_cross"], **NO_PRICE_FILTER
+    )
+
+    assert result["is_entry_candidate"] is False
+    assert result["reason"] == "no_signal_today"
+
+
+def test_golden_cross_module_short_fires_even_when_ma20_is_rising():
+    df = _base_df(
+        sma5=[110, 94],
+        sma20=[100, 105],
+        close=[110.0, 94.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="short", modules=["golden_cross"], **NO_PRICE_FILTER
+    )
+
+    assert result["is_entry_candidate"] is True
+
+
 def test_empty_modules_raises():
     df = _base_df(sma5=[100], sma20=[90])
 

@@ -17,6 +17,7 @@ DEFAULT_MODULES = ("ma_order", "perfect_golden_cross")
 
 MODULE_LABELS = {
     "ma_order": "並び順",
+    "golden_cross": "ゴールデンクロス",
     "perfect_golden_cross": "完全ゴールデンクロス",
     "bounce": "反発",
     "parallel_rise": "並走上昇",
@@ -26,6 +27,7 @@ MODULE_LABELS = {
 # ショート方向では表裏の関係になるモジュールのみ、表示ラベルを上書きする
 # （並び順・反発・半分シグナルは同じ言葉のままで方向だけ逆になるため上書き不要）
 MODULE_LABELS_SHORT_OVERRIDE = {
+    "golden_cross": "デッドクロス",
     "perfect_golden_cross": "完全デッドクロス",
     "parallel_rise": "並走下降",
 }
