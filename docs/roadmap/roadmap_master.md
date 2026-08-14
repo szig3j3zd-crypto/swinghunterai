@@ -262,6 +262,13 @@ Phase5 UI
 チャート
 通知
 ポートフォリオ
+
+※ 2026-08-14、Tailscaleを使い、PC上で起動したダッシュボードへスマホ・他PCから
+アクセスできるようにした（`.streamlit/config.toml`でStreamlitを全インターフェース
+待受に設定）。株価DB（485MB）やトレード記録はPC上のまま、クラウドDB移行やUI再実装を
+伴わずに実現。詳細は docs/architecture/system_configuration/mobile_access.md 参照。
+チャートの独自スクロールバーはタッチ操作未対応（既知の制限、同ドキュメント参照）。
+
 Phase6 AI
 AIコメント
 AI売買判断

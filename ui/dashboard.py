@@ -1,3 +1,4 @@
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -7,8 +8,18 @@ from pathlib import Path
 # これにより `PYTHONPATH` の設定なしで `streamlit run ui/dashboard.py` を実行できる。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pandas as pd
 import streamlit as st
+
+# Streamlit Community Cloudの「Secrets」設定は st.secrets からしか読めないため、
+# config/settings.py が使う os.getenv 経由でローカル(.env)と同じコードパスで
+# 読めるよう、他のimport（config.settingsをロードする前）で環境変数へ橋渡しする
+try:
+    for _key, _value in st.secrets.items():
+        os.environ.setdefault(_key, str(_value))
+except Exception:
+    pass
+
+import pandas as pd
 import streamlit.components.v1 as components
 
 from config.config import MAX_PRICE, MIN_MARKET_CAP, MIN_PRICE, MIN_VOLUME

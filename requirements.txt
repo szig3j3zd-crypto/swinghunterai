@@ -23,6 +23,7 @@ jquants-api-client==2.3.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 kiwisolver==1.5.0
+libsql==0.1.11
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 matplotlib==3.11.0

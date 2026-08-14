@@ -13,6 +13,8 @@ logs/
 
 # SQLite Database
 data/stock.db
+data/stock_replica.db
+data/stock_replica.db-*
 
 # Downloaded Stock Data
 data/stock_data/
@@ -30,3 +32,6 @@ Thumbs.db
 
 # Environment
 .env
+
+# Streamlit Community Cloud用シークレット（ローカル検証用に置く場合のみ発生）
+.streamlit/secrets.toml

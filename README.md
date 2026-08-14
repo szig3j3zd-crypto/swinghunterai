@@ -33,3 +33,11 @@ python scripts/update_stock_data.py
 # DB再構築（テーブル作成のみ）
 python scripts/rebuild_database.py
 ```
+
+## ダッシュボード
+
+`株探し起動.bat` を実行、または `streamlit run ui/dashboard.py` で起動する。
+
+スマホ・他のPCから使う方法（Tailscale経由、無料）は
+[docs/architecture/system_configuration/mobile_access.md](docs/architecture/system_configuration/mobile_access.md)
+を参照。

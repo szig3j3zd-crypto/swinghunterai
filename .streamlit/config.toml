@@ -1,0 +1,7 @@
+[server]
+# Tailscale経由でスマホ・他PCから接続できるよう、全ネットワークインターフェースで待ち受ける
+address = "0.0.0.0"
+port = 8501
+
+[browser]
+gatherUsageStats = false
