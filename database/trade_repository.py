@@ -42,7 +42,8 @@ def create_table():
         cursor.execute(
             "ALTER TABLE trades ADD COLUMN timeframe TEXT DEFAULT 'daily'"
         )
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, ValueError):
+        # sqlite3はOperationalError、libsql（Turso接続時）はValueErrorを送出する
         pass
 
     conn.commit()

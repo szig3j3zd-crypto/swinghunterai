@@ -44,14 +44,15 @@ def create_table():
         cursor.execute(
             "ALTER TABLE stock_master ADD COLUMN nikkei225 INTEGER DEFAULT 0"
         )
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, ValueError):
+        # sqlite3はOperationalError、libsql（Turso接続時）はValueErrorを送出する
         pass
 
     try:
         cursor.execute(
             "ALTER TABLE stock_master ADD COLUMN market_cap REAL"
         )
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, ValueError):
         pass
 
     conn.commit()
