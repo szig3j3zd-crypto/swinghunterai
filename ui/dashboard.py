@@ -420,8 +420,8 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     max_scroll_offset = total_bar_count - visible_bar_count
 
     # Streamlitが描画する初期表示は常に最新側（表示幅ぶん）。そこから先の
-    # 横スクロールはPlotly側の操作（チャート上のドラッグ、チャート下の
-    # レンジスライダー、矢印キー）に任せ、ブラウザ側だけで完結させる
+    # 横スクロールは、チャート下に表示するスクロールバー・チャート上の
+    # ドラッグ・矢印キーに任せ、ブラウザ側だけで完結させる
     # （ui.chart.build_scroll_sync_script）ため、Streamlitの再実行は伴わない
     start_offset = max_scroll_offset
     start_index = start_offset
@@ -468,7 +468,10 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             visible_bar_count,
             start_offset,
         ),
-        height=0,
+        # トラック自体は細い（14px）が、ドラッグ中に多少上下にぶれても
+        # このiframe自身の高さの範囲内であればmousemoveを取りこぼさない
+        # ため、少し余裕を持たせた高さにする
+        height=32,
     )
 
 

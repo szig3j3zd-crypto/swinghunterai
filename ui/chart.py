@@ -325,7 +325,7 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
         )
 
     fig.update_layout(
-        height=760 if show_volume else 580,
+        height=680 if show_volume else 500,
         margin=dict(l=40, r=20, t=10, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         xaxis_rangeslider_visible=False,
@@ -384,16 +384,6 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
     if show_volume and volume_range is not None:
         fig.update_yaxes(range=volume_range, row=2, col=1)
 
-    # Plotly標準のレンジスライダー（一番下のサブプロットに、全期間分の
-    # ミニチャート＋現在の表示範囲を示す枠を表示する）を付ける。枠を
-    # ドラッグするとチャート本体と自動的に同期してスクロールする
-    # （同じx軸を参照しているため、追加のJavaScriptなしでPlotly標準機能
-    # だけで完結する）
-    rangeslider_row = 2 if show_volume else 1
-    fig.update_xaxes(rangeslider_visible=True, row=rangeslider_row, col=1)
-    if show_volume:
-        fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
-
     return fig
 
 
@@ -401,22 +391,27 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                               visible_bar_count, initial_start_index):
 
     """
-    左右矢印キーでのチャートスクロールと、表示範囲変更時の価格軸・出来高軸の
-    自動フィットを行うJavaScriptを組み立てる
+    チャートの下に表示する、一般的なスクロールバー（トラック＋つまみの
+    シンプルな見た目。Plotly標準のレンジスライダーはトラック内に全期間の
+    ミニチャートを描画してしまい見た目が煩雑になるため採用しなかった）と、
+    左右矢印キーでのスクロール、表示範囲変更時の価格軸・出来高軸の自動
+    フィットを行うJavaScriptを組み立てる
 
     st.components.v1.html(...)でst.plotly_chartの直後に埋め込む想定。
-    横スクロール自体は、チャート上のマウスドラッグ（Plotly標準の
-    dragmode="pan"）と、チャート下のPlotly標準レンジスライダー
-    （build_price_chartのrangeslider_visible=True）のどちらもPlotly標準
-    機能でチャート本体と自動的に同期するため、このscript側で同期を取る
-    必要はない。このscriptが追加で行うのは次の2点
+    このscriptが行うのは次の3点
 
-    - 左右矢印キーでのローソク足1本分ずつのスクロール（Streamlitの
-      再実行を伴わず、ブラウザ側でPlotly.relayoutを直接呼ぶ）
-    - 表示範囲が変わるたびに（ドラッグ・レンジスライダー・矢印キーの
-      いずれが原因でも）、その範囲内の高値・安値・出来高から価格軸・
-      出来高軸のレンジを自動で再フィットする
-      （compute_visible_windowと同じ計算をブラウザ側で再現）
+    - チャート下にスクロールバー（トラック＋つまみ）を描画する。つまみの
+      位置・幅は現在の表示範囲（Plotlyのxaxis.range）が表示期間全体の
+      どこに当たるかで決まる。つまみをドラッグする、またはトラックの
+      余白をクリックするとその位置へスクロールする
+    - 左右矢印キーでのローソク足1本分ずつのスクロール
+    - 表示範囲が変わるたびに（スクロールバー・チャート上のドラッグ
+      （Plotly標準のdragmode="pan"）・矢印キーのいずれが原因でも）、
+      その範囲内の高値・安値・出来高から価格軸・出来高軸のレンジを自動で
+      再フィットし、あわせてスクロールバーのつまみの位置・幅も更新する
+
+    いずれの操作もStreamlitの再実行を伴わず、ブラウザ側でPlotly.relayoutを
+    直接呼ぶことで完結する
 
     Parameters
     ----------
@@ -448,8 +443,39 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
     volumes_json = json.dumps([float(v) for v in volumes])
 
     return f"""
+    <style>
+        body {{ margin: 0; }}
+        #sh-scrollbar-track {{
+            position: relative;
+            width: 100%;
+            height: 14px;
+            margin-top: 4px;
+            background: rgba(120, 120, 120, 0.18);
+            border-radius: 7px;
+            box-sizing: border-box;
+            cursor: pointer;
+        }}
+        #sh-scrollbar-thumb {{
+            position: absolute;
+            top: 0;
+            height: 100%;
+            min-width: 20px;
+            background: rgba(120, 120, 120, 0.6);
+            border-radius: 7px;
+            cursor: grab;
+            box-sizing: border-box;
+        }}
+        #sh-scrollbar-thumb:hover {{ background: rgba(100, 100, 100, 0.75); }}
+        #sh-scrollbar-thumb:active {{ cursor: grabbing; background: rgba(90, 90, 90, 0.8); }}
+    </style>
+    <div id="sh-scrollbar-track">
+        <div id="sh-scrollbar-thumb"></div>
+    </div>
     <script>
     (function() {{
+        const track = document.getElementById("sh-scrollbar-track");
+        const thumb = document.getElementById("sh-scrollbar-thumb");
+
         // このscriptを埋め込んだiframe（window.frameElement）の直前にある
         // Plotlyチャートdivを探す。IDを直接指定できない（Streamlitが
         // 内部で採番するため）ので、DOM上の前後関係だけで判定する
@@ -510,6 +536,29 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             }};
         }}
 
+        // スクロールバーのつまみの位置・幅を、現在のxaxis.rangeが表示期間
+        // 全体（barTimestampsの最小〜最大）のどこに当たるかから計算する
+        function updateThumb(gd) {{
+            const scrollState = gd.__swingHunterScroll;
+            if (!scrollState) return;
+            const range = gd._fullLayout && gd._fullLayout.xaxis
+                ? gd._fullLayout.xaxis.range : null;
+            if (!range) return;
+
+            const minMs = scrollState.barTimestamps[0];
+            const maxMs = scrollState.barTimestamps[scrollState.barTimestamps.length - 1];
+            const totalMs = Math.max(maxMs - minMs, 1);
+            const curStartMs = new Date(range[0]).getTime();
+            const curEndMs = new Date(range[1]).getTime();
+
+            let leftPct = ((curStartMs - minMs) / totalMs) * 100;
+            let widthPct = ((curEndMs - curStartMs) / totalMs) * 100;
+            leftPct = Math.max(0, Math.min(leftPct, 100));
+            widthPct = Math.max(2, Math.min(widthPct, 100 - leftPct));
+            thumb.style.left = leftPct + "%";
+            thumb.style.width = widthPct + "%";
+        }}
+
         function setup(gd) {{
             // スキャン/売買銘柄/監視銘柄タブが同時にチャートを表示している
             // ケースがあるため、本数・現在位置などの状態はグローバルではなく
@@ -525,6 +574,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 startIndex: {int(initial_start_index)},
                 maxStartIndex: Math.max(barDates.length - {int(visible_bar_count)}, 0),
             }};
+            updateThumb(gd);
 
             // マウスが乗っているチャートを「矢印キーの対象」として覚えておく
             function markActive() {{
@@ -535,38 +585,47 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 markActive();
             }}
 
-            // マウスドラッグ（Plotly標準のdragmode="pan"）・レンジスライダー・
+            // マウスドラッグ（Plotly標準のdragmode="pan"）・スクロールバー・
             // 矢印キーのいずれでx軸レンジが変わった場合も、Plotlyが発火する
             // plotly_relayoutイベントを起点に価格軸・出来高軸を再フィット
-            // する。同じ関数から呼ぶ自分自身のy軸更新（Plotly.relayout）が
-            // 再度plotly_relayoutを発火させても、そちらはxaxis側のキーを
+            // し、スクロールバーのつまみも合わせて更新する。このハンドラは
+            // 今回のthumb/trackを直接参照するクロージャなので、矢印キーの
+            // リスナーと同様に再描画のたびに張り替える（古いハンドラをその
+            // まま使い回すと、前回のiframeが消えたときに一緒に破棄された
+            // 古いthumb/trackを更新しようとして無反応になるため）。同じ
+            // 関数から呼ぶ自分自身のy軸更新（Plotly.relayout）が再度
+            // plotly_relayoutを発火させても、そちらはxaxis側のキーを
             // 含まないため無限ループにはならない
-            if (!gd.__swingHunterRelayoutBound) {{
-                gd.__swingHunterRelayoutBound = true;
-                gd.on("plotly_relayout", function(eventdata) {{
-                    const xChanged = Object.keys(eventdata).some(function(k) {{
-                        return k.indexOf("xaxis.range") === 0;
-                    }});
-                    if (!xChanged) return;
-
-                    const scrollState = gd.__swingHunterScroll;
-                    if (!scrollState) return;
-                    const curRange = gd._fullLayout && gd._fullLayout.xaxis
-                        ? gd._fullLayout.xaxis.range : null;
-                    if (!curRange) return;
-
-                    const startMs = new Date(curRange[0]).getTime();
-                    let startIndex = lowerBound(scrollState.barTimestamps, startMs);
-                    startIndex = Math.max(0, Math.min(startIndex, scrollState.maxStartIndex));
-                    scrollState.startIndex = startIndex;
-
-                    const ranges = computeYRanges(scrollState, startIndex);
-                    window.parent.Plotly.relayout(gd, {{
-                        "yaxis.range": ranges.yRange,
-                        "yaxis2.range": ranges.volRange,
-                    }});
-                }});
+            if (gd.__swingHunterRelayoutHandler
+                    && typeof gd.removeListener === "function") {{
+                gd.removeListener("plotly_relayout", gd.__swingHunterRelayoutHandler);
             }}
+            const relayoutHandler = function(eventdata) {{
+                const xChanged = Object.keys(eventdata).some(function(k) {{
+                    return k.indexOf("xaxis.range") === 0;
+                }});
+                if (!xChanged) return;
+
+                const scrollState = gd.__swingHunterScroll;
+                if (!scrollState) return;
+                const curRange = gd._fullLayout && gd._fullLayout.xaxis
+                    ? gd._fullLayout.xaxis.range : null;
+                if (!curRange) return;
+
+                const startMs = new Date(curRange[0]).getTime();
+                let startIndex = lowerBound(scrollState.barTimestamps, startMs);
+                startIndex = Math.max(0, Math.min(startIndex, scrollState.maxStartIndex));
+                scrollState.startIndex = startIndex;
+
+                const ranges = computeYRanges(scrollState, startIndex);
+                window.parent.Plotly.relayout(gd, {{
+                    "yaxis.range": ranges.yRange,
+                    "yaxis2.range": ranges.volRange,
+                }});
+                updateThumb(gd);
+            }};
+            gd.__swingHunterRelayoutHandler = relayoutHandler;
+            gd.on("plotly_relayout", relayoutHandler);
 
             // 矢印キーのリスナーは常にこのチャート（この再描画）の分だけを
             // 残す。「一度だけ登録して使い回す」実装だと、以前のリスナーは
@@ -621,6 +680,107 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             }};
             window.parent.__swingHunterScrollKeyHandler = keydownHandler;
             window.parent.document.addEventListener("keydown", keydownHandler, true);
+
+            // つまみ・トラックへの実際のクリックは、このscriptを埋め込んだ
+            // iframe自身のdocumentで発生するイベントであり、親ページの
+            // documentへは伝播しない（iframeは別ドキュメントであり、
+            // 中で起きたmousedown等が親にbubbleすることはない）。そのため
+            // mousedown/mousemove/mouseupはすべてこのiframe自身の要素・
+            // documentで受け取る。iframe（＝チャート幅いっぱいの横長・
+            // 低いdiv）の高さの範囲内でカーソルが動いている限りは、
+            // 横方向にどれだけ動いてもこのdocumentのmousemoveが発火し
+            // 続ける。iframeは再描画のたびに作り直されるため、ここで
+            // 登録するリスナーも（前回分ごと）毎回新しく作られる形になり、
+            // 明示的な後始末は不要
+            let dragState = null;
+
+            thumb.addEventListener("mousedown", function(e) {{
+                const scrollState = gd.__swingHunterScroll;
+                const range = gd._fullLayout && gd._fullLayout.xaxis
+                    ? gd._fullLayout.xaxis.range : null;
+                if (!scrollState || !range) return;
+                dragState = {{
+                    startClientX: e.clientX,
+                    startRangeMs: [
+                        new Date(range[0]).getTime(),
+                        new Date(range[1]).getTime(),
+                    ],
+                    trackWidthPx: track.getBoundingClientRect().width,
+                    minMs: scrollState.barTimestamps[0],
+                    maxMs: scrollState.barTimestamps[scrollState.barTimestamps.length - 1],
+                }};
+                e.preventDefault();
+            }});
+
+            document.addEventListener("mousemove", function(e) {{
+                if (!dragState || !window.parent.Plotly) return;
+                const deltaPx = e.clientX - dragState.startClientX;
+                const deltaMs = (deltaPx / dragState.trackWidthPx)
+                    * (dragState.maxMs - dragState.minMs);
+                const width = dragState.startRangeMs[1] - dragState.startRangeMs[0];
+                let newStart = dragState.startRangeMs[0] + deltaMs;
+                let newEnd = dragState.startRangeMs[1] + deltaMs;
+                if (newStart < dragState.minMs) {{
+                    newStart = dragState.minMs;
+                    newEnd = newStart + width;
+                }}
+                if (newEnd > dragState.maxMs) {{
+                    newEnd = dragState.maxMs;
+                    newStart = newEnd - width;
+                }}
+                window.parent.Plotly.relayout(gd, {{
+                    "xaxis.range": [
+                        new Date(newStart).toISOString(),
+                        new Date(newEnd).toISOString(),
+                    ],
+                }});
+            }});
+
+            document.addEventListener("mouseup", function() {{
+                dragState = null;
+                // このiframe内をクリックするとブラウザのフォーカスがiframe側に
+                // 移り、以後の矢印キー等のキー入力が親ページ（window.parent.
+                // document）へ届かなくなる（キーイベントはフォーカスのある
+                // ドキュメントへ配送されるため）。ドラッグ操作が終わったら
+                // フォーカスを親ページへ戻し、矢印キーでのスクロールを
+                // 引き続き使えるようにする
+                window.parent.focus();
+            }});
+
+            // トラックの余白（つまみ以外の部分）をクリックすると、
+            // そのクリック位置を中心に表示幅を保ったままジャンプする
+            track.addEventListener("mousedown", function(e) {{
+                if (e.target === thumb || !window.parent.Plotly) return;
+                const scrollState = gd.__swingHunterScroll;
+                const range = gd._fullLayout && gd._fullLayout.xaxis
+                    ? gd._fullLayout.xaxis.range : null;
+                if (!scrollState || !range) return;
+
+                const rect = track.getBoundingClientRect();
+                const minMs = scrollState.barTimestamps[0];
+                const maxMs = scrollState.barTimestamps[scrollState.barTimestamps.length - 1];
+                const clickMs = minMs + ((e.clientX - rect.left) / rect.width) * (maxMs - minMs);
+                const width = new Date(range[1]).getTime() - new Date(range[0]).getTime();
+                let newStart = clickMs - width / 2;
+                let newEnd = clickMs + width / 2;
+                if (newStart < minMs) {{
+                    newStart = minMs;
+                    newEnd = newStart + width;
+                }}
+                if (newEnd > maxMs) {{
+                    newEnd = maxMs;
+                    newStart = newEnd - width;
+                }}
+                window.parent.Plotly.relayout(gd, {{
+                    "xaxis.range": [
+                        new Date(newStart).toISOString(),
+                        new Date(newEnd).toISOString(),
+                    ],
+                }});
+                // つまみのドラッグ後と同様、クリックでiframe側に移った
+                // フォーカスを親ページへ戻す
+                window.parent.focus();
+            }});
         }}
 
         // st.plotly_chart側の描画は非同期のため、このscriptが先に動いて
