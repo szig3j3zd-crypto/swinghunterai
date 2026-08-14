@@ -269,6 +269,15 @@ Phase5 UI
 伴わずに実現。詳細は docs/architecture/system_configuration/mobile_access.md 参照。
 チャートの独自スクロールバーはタッチ操作未対応（既知の制限、同ドキュメント参照）。
 
+※ 2026-08-14、上記に加え、「PCの電源が切れていてもアクセスしたい」という要望に
+応えるため、株価DB・トレード記録・監視銘柄をTurso（クラウド上のSQLite互換DB、
+Embedded Replica機能でPC側は従来通り高速）へ移行し、ダッシュボードをStreamlit
+Community Cloudへデプロイした。`database/db.py`1箇所の接続切り替えのみでRepository層は
+無改修。売買銘柄・監視銘柄はスマホからも追加・編集できる（候補スキャンはPC側推奨、
+詳細は既知の制限を参照）。閲覧はGoogleアカウント制限で自分のみに限定。プロジェクトの
+Python実行環境は3.14→3.13へ変更（Turso接続クライアントのWindows向けwheelが3.14未対応
+だったため）。詳細は docs/architecture/system_configuration/cloud_access.md 参照。
+
 Phase6 AI
 AIコメント
 AI売買判断

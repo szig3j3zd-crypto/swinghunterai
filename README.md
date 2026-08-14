@@ -12,6 +12,10 @@
 pip install -r requirements.txt
 ```
 
+Python 3.13を使用する（Turso接続クライアントがPython 3.14向けのWindows wheelを
+まだ提供していないため。詳細は
+[docs/architecture/system_configuration/cloud_access.md](docs/architecture/system_configuration/cloud_access.md)）。
+
 `.env` に以下を設定する。
 
 ```
@@ -38,6 +42,11 @@ python scripts/rebuild_database.py
 
 `株探し起動.bat` を実行、または `streamlit run ui/dashboard.py` で起動する。
 
-スマホ・他のPCから使う方法（Tailscale経由、無料）は
-[docs/architecture/system_configuration/mobile_access.md](docs/architecture/system_configuration/mobile_access.md)
-を参照。
+スマホ・他のPCから使う方法（無料）は2通りある。
+
+- PCの電源が入っていなくてもアクセスしたい場合（推奨）:
+  [docs/architecture/system_configuration/cloud_access.md](docs/architecture/system_configuration/cloud_access.md)
+  （Turso + Streamlit Community Cloud）
+- PCが起動している間だけでよい場合:
+  [docs/architecture/system_configuration/mobile_access.md](docs/architecture/system_configuration/mobile_access.md)
+  （Tailscale）
