@@ -1,7 +1,12 @@
 import os
 import sqlite3
 
-from config.settings import TURSO_AUTH_TOKEN, TURSO_DATABASE_URL, TURSO_EMBEDDED_REPLICA
+from config.settings import (
+    FORCE_LOCAL_SQLITE,
+    TURSO_AUTH_TOKEN,
+    TURSO_DATABASE_URL,
+    TURSO_EMBEDDED_REPLICA,
+)
 
 DB_PATH = "data/stock.db"
 
@@ -21,6 +26,11 @@ def create_connection():
       書き込んでしまわないようにするための安全策。既存のテストの挙動を変えない）
     - Turso未設定（.envにTURSO_DATABASE_URL/TURSO_AUTH_TOKENが無い）の場合もローカル
       SQLiteへ接続する（後方互換）
+    - FORCE_LOCAL_SQLITE=true（.envのみ）なら、Turso設定の有無に関わらずTursoへ一切
+      接続せずローカルファイルのみで動作する。Turso側の書き込み制限やネットワーク不調で
+      アプリが起動できないときの緊急退避用。Embedded Replicaのローカルキャッシュ
+      （data/stock_replica.db）が既にあればそちらへ接続する（Turso運用開始後の
+      最新データが入っているため）。無ければdata/stock.dbへ接続する
     - TURSO_EMBEDDED_REPLICA=trueならローカルファイル+自動同期のEmbedded Replicaモード
       （PC用、読み書きが高速）
     - それ以外はTursoへ直接リモート接続する（Streamlit Community Cloud用、ローカル
@@ -28,6 +38,12 @@ def create_connection():
     """
 
     if os.getenv("PYTEST_CURRENT_TEST") or not (TURSO_DATABASE_URL and TURSO_AUTH_TOKEN):
+        return sqlite3.connect(DB_PATH)
+
+    if FORCE_LOCAL_SQLITE:
+        if os.path.exists(EMBEDDED_REPLICA_PATH):
+            return sqlite3.connect(EMBEDDED_REPLICA_PATH)
+
         return sqlite3.connect(DB_PATH)
 
     import libsql
