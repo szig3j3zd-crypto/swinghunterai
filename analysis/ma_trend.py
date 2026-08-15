@@ -9,11 +9,12 @@ def get_ma_order_series(df, ma_mode="full"):
     Parameters
     ----------
     df
-        sma5, sma20（ma_mode="full"ならさらにsma60）列を持つ
-        株価DataFrame（日付順ソート済み）
+        sma5, sma20（ma_mode="full"ならさらにsma60、"full_100"ならさらにsma100）
+        列を持つ株価DataFrame（日付順ソート済み）
 
     ma_mode
         "full"（5>20>60の3本、デフォルト） または "two_line"（5>20の2本のみ）
+        または "full_100"（5>20>100の3本）
 
     Returns
     -------
@@ -26,8 +27,9 @@ def get_ma_order_series(df, ma_mode="full"):
         is_long = df["sma5"] > df["sma20"]
         is_short = df["sma20"] > df["sma5"]
     else:
-        is_long = (df["sma5"] > df["sma20"]) & (df["sma20"] > df["sma60"])
-        is_short = (df["sma60"] > df["sma20"]) & (df["sma20"] > df["sma5"])
+        long_column = "sma100" if ma_mode == "full_100" else "sma60"
+        is_long = (df["sma5"] > df["sma20"]) & (df["sma20"] > df[long_column])
+        is_short = (df[long_column] > df["sma20"]) & (df["sma20"] > df["sma5"])
 
     order = pd.Series("mixed", index=df.index)
     order[is_long] = "long"
@@ -71,6 +73,9 @@ def _trend_columns(ma_mode):
     if ma_mode == "two_line":
         return ("sma5", "sma20")
 
+    if ma_mode == "full_100":
+        return ("sma5", "sma20", "sma100")
+
     return ("sma5", "sma20", "sma60")
 
 
@@ -81,6 +86,7 @@ def is_long_trend_series(df, slope_lookback=1, ma_mode="full"):
 
     ma_mode="full"（デフォルト）: 上から5>20>60の順で並び、かつ各MAが上向き
     ma_mode="two_line": 上から5>20の順で並び、かつMA5・MA20とも上向き
+    ma_mode="full_100": 上から5>20>100の順で並び、かつ各MAが上向き
     """
 
     order = get_ma_order_series(df, ma_mode=ma_mode)
@@ -101,6 +107,7 @@ def is_short_trend_series(df, slope_lookback=1, ma_mode="full"):
 
     ma_mode="full"（デフォルト）: 上から60>20>5の順で並び、かつ各MAが下向き
     ma_mode="two_line": 上から20>5の順で並び、かつMA5・MA20とも下向き
+    ma_mode="full_100": 上から100>20>5の順で並び、かつ各MAが下向き
     """
 
     order = get_ma_order_series(df, ma_mode=ma_mode)

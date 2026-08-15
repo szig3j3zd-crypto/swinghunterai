@@ -44,8 +44,8 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
     ----------
     df
         date, open, close, volume, volume_ratio, sma5, sma20
-        （ma_mode="full"ならさらにsma60）列を持つ株価DataFrame
-        （単一銘柄、日付順ソート済み）
+        （ma_mode="full"ならさらにsma60、"full_100"ならさらにsma100）
+        列を持つ株価DataFrame（単一銘柄、日付順ソート済み）
 
     direction
         "long" または "short"
@@ -57,8 +57,10 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
         "parallel_rise"（並走上昇）、"half_signal"（半分シグナル）から選択する
 
     ma_mode
-        "ma_order"選択時の並び順バリエーション。"full"（5>20>60、デフォルト）
-        または "two_line"（5>20のみ）。"two_line"の場合、60日線フィルタも解除する
+        "ma_order"選択時の並び順バリエーション。"full"（5>20>60、デフォルト）、
+        "two_line"（5>20のみ）、"full_100"（5>20>100）。"two_line"の場合、
+        60日線フィルタも解除する。"full_100"の場合、60日線フィルタの代わりに
+        100日線フィルタを適用する
 
     bounce_merge_within
         近接した反発をまとめる間隔（行数ベース）。Noneならconfig.BOUNCE_MERGE_WITHIN_DAYSを使う
@@ -95,6 +97,18 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
     if not passes_price_filter(current_price, min_price=min_price, max_price=max_price):
         return _skip("price_out_of_range", current_price, direction)
 
+    # 反発の監視状態（反発の一歩手前）は、下落継続中でMA5がMA20を割った/割る直前の
+    # 状態を指すため、並び順モジュールの「上向きの並び」条件と本質的に両立しない。
+    # ma_orderを反発と組み合わせて選択した場合でも監視銘柄が埋もれないよう、
+    # 並び順まわりのスキップ判定より先に監視状態を確定させ、下で優先的に返す
+    watch_series = None
+
+    if "bounce" in modules:
+        bounce_result = detect_bounce(df, direction=direction)
+        watch_series = bounce_result["bounce_watch"]
+
+    is_watch_today = watch_series is not None and bool(watch_series.iloc[-1])
+
     state_ok = pd.Series(True, index=df.index)
 
     if "ma_order" in modules:
@@ -104,19 +118,28 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
             state_ok &= is_short_trend_series(df, ma_mode=ma_mode)
 
         if not bool(state_ok.iloc[-1]):
+            if is_watch_today:
+                return _watch(df, current_price, direction)
+
             return _skip("not_in_trend", current_price, direction)
 
-        if ma_mode == "full":
-            sma60_today = df["sma60"].iloc[-1]
+        if ma_mode in ("full", "full_100"):
+            filter_column = "sma100" if ma_mode == "full_100" else "sma60"
+            filter_today = df[filter_column].iloc[-1]
 
-            if direction == "long" and not (current_price > sma60_today):
-                return _skip("below_sma60", current_price, direction)
+            if direction == "long" and not (current_price > filter_today):
+                if is_watch_today:
+                    return _watch(df, current_price, direction)
 
-            if direction == "short" and not (current_price < sma60_today):
-                return _skip("above_sma60", current_price, direction)
+                return _skip(f"below_{filter_column}", current_price, direction)
+
+            if direction == "short" and not (current_price < filter_today):
+                if is_watch_today:
+                    return _watch(df, current_price, direction)
+
+                return _skip(f"above_{filter_column}", current_price, direction)
 
     event_series = {}
-    watch_series = None
 
     if "golden_cross" in modules:
         if direction == "long":
@@ -137,9 +160,7 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
         event_series["half_signal"] = detect_half_signal(df, direction=direction)["half_signal"]
 
     if "bounce" in modules:
-        bounce_result = detect_bounce(df, direction=direction)
         event_series["bounce"] = bounce_result["bounce_candidate"]
-        watch_series = bounce_result["bounce_watch"]
 
     if event_series:
         combined_candidate = pd.Series(True, index=df.index)
@@ -152,8 +173,8 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
         combined_candidate = state_ok
 
     if not bool(combined_candidate.iloc[-1]):
-        if watch_series is not None and bool(watch_series.iloc[-1]):
-            return _watch(current_price, direction)
+        if is_watch_today:
+            return _watch(df, current_price, direction)
 
         return _skip("no_signal_today", current_price, direction)
 
@@ -220,17 +241,32 @@ def _skip(reason, price=None, direction=None):
     }
 
 
-def _watch(price, direction):
+def _watch(df, price, direction):
 
     """
     監視銘柄結果の組み立て
 
-    反発モジュールでMA20を下回っている（ショートなら上回っている）間の日を示す。
-    エントリー候補にはならないが、entry_signal_spec.md 5章の方針により
+    反発モジュールの監視状態（MA100上昇トレンド中でMA5・MA20が接近している状態）
+    を示す。当日のMA5・MA20の位置関係で理由の文言だけ出し分ける。
+    - MA5がまだMA20の正しい側（ロングなら上、ショートなら下）: reason="bounce_approaching_watch"
+    - MA5がMA20の反対側に出ている: reason="bounce_below_ma20_watch"（ショートは
+      "bounce_above_ma20_watch"）
+    エントリー候補にはならないが、entry_signal_spec.md 6章の方針により
     見送りとは別扱いにする
     """
 
-    reason = "bounce_below_ma20_watch" if direction == "long" else "bounce_above_ma20_watch"
+    sma5_today = df["sma5"].iloc[-1]
+    sma20_today = df["sma20"].iloc[-1]
+
+    if direction == "long":
+        is_undershoot = sma5_today < sma20_today
+    else:
+        is_undershoot = sma5_today > sma20_today
+
+    if is_undershoot:
+        reason = "bounce_below_ma20_watch" if direction == "long" else "bounce_above_ma20_watch"
+    else:
+        reason = "bounce_approaching_watch"
 
     return {
         "is_entry_candidate": False,

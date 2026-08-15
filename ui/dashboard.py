@@ -49,7 +49,7 @@ from service.screening_service import (
     get_nikkei225_stocks,
     get_prime_stocks,
     get_stock_chart_data,
-    get_today_candidates,
+    get_today_scan_results,
 )
 from service.trade_service import calculate_pnl, group_by_year_and_month, total_pnl
 from ui.chart import (
@@ -74,14 +74,26 @@ SKIP_REASON_LABELS = {
     "trend_period_not_found": "トレンド期間を特定できず",
     "below_sma60": "60日線より下",
     "above_sma60": "60日線より上",
+    "below_sma100": "100日線より下",
+    "above_sma100": "100日線より上",
     "bounce_limit_exceeded": "反発回数が上限を超過",
 }
 
-MA_MODE_LABELS = {"full": "3本版（5>20>60）", "two_line": "2本版（5>20のみ）"}
+WATCH_REASON_LABELS = {
+    "bounce_approaching_watch": "MA20に接近中です（反発の反転待ち）。反転すればエントリー候補に昇格します",
+    "bounce_below_ma20_watch": "MA20を下回っています。回復すればエントリー候補に昇格します",
+    "bounce_above_ma20_watch": "MA20を上回っています。回復すればエントリー候補に昇格します",
+}
+
+MA_MODE_LABELS = {
+    "full": "3本版（5>20>60）",
+    "full_100": "3本版（5>20>100）",
+    "two_line": "2本版（5>20のみ）",
+}
 MA_MODE_LABELS_INVERSE = {v: k for k, v in MA_MODE_LABELS.items()}
 
 DIRECTION_LABELS = {"long": "ロング（買い）", "short": "ショート（売り）"}
-TIMEFRAME_LABELS = {"daily": "日足", "weekly": "週足"}
+TIMEFRAME_LABELS = {"daily": "日足", "weekly": "週足", "monthly": "月足"}
 TIMEFRAME_LABELS_INVERSE = {v: k for k, v in TIMEFRAME_LABELS.items()}
 
 # チャートの表示期間（読み込む・横スクロールできる範囲全体）の選択肢。
@@ -97,9 +109,11 @@ CHART_DISPLAY_WIDTH_OPTIONS = (
 
 # 時間足ごとのデフォルト表示期間・表示幅（日足は直近半年、週足は直近3年が
 # 読み取りやすいため。表示幅も同じ値をデフォルトにすることで、初期表示は
-# 従来どおり期間全体がそのまま見える見た目になる）
-CHART_PERIOD_DEFAULT = {"daily": "6ヶ月", "weekly": "3年"}
-CHART_DISPLAY_WIDTH_DEFAULT = {"daily": "6ヶ月", "weekly": "3年"}
+# 従来どおり期間全体がそのまま見える見た目になる）。月足のみ、表示期間を
+# データが存在しうる最大（10年）にして過去分までスクロールできるように
+# しつつ、初期表示の表示幅は見やすい5年（60本）にとどめる
+CHART_PERIOD_DEFAULT = {"daily": "6ヶ月", "weekly": "3年", "monthly": "10年"}
+CHART_DISPLAY_WIDTH_DEFAULT = {"daily": "6ヶ月", "weekly": "3年", "monthly": "5年"}
 
 # 日単位で見たい短い表示幅では「月/日」、それより長い表示幅では「年/月」で
 # 出来高チャート下の日付軸ラベルを表示する
@@ -175,6 +189,22 @@ def _candidate_row(candidate):
     }
 
 
+def _watch_candidate_row(candidate):
+
+    """
+    監視銘柄候補1件を表示用のdictに変換する（entry_signal_spec.md 6章の
+    「反発の手前」。エントリー候補と違いスコア・損切/利確価格を持たないため
+    _candidate_rowとは別の列構成にする）
+    """
+
+    return {
+        "コード": candidate["code"],
+        "銘柄名": candidate["company_name"],
+        "株価": candidate["price"],
+        "状況": WATCH_REASON_LABELS.get(candidate.get("reason"), candidate.get("reason")),
+    }
+
+
 def _on_candidate_table_select(table_key, candidates_list):
 
     """
@@ -209,6 +239,7 @@ CHART_DISPLAY_PREF_DEFAULTS = {
     "chart_pref_show_sma10": False,
     "chart_pref_show_sma20": True,
     "chart_pref_show_sma60": True,
+    "chart_pref_show_sma100": True,
     "chart_pref_show_volume": True,
     "chart_pref_show_hover_info": True,
 }
@@ -252,6 +283,13 @@ def _render_focus_block(label, result, code, chart_timeframe):
         st.error(result["error"])
         return
 
+    if result.get("no_modules_selected"):
+        price = result.get("price")
+        price_note = f"　現在の株価: {price}円" if price is not None else ""
+        st.info(f"サイドバーの「判断基準」が未選択のため、判定は行っていません{price_note}")
+        _render_chart_block(code, chart_timeframe, key_prefix="scan")
+        return
+
     if result["is_entry_candidate"]:
         st.success("本日のエントリー候補です")
         st.dataframe(
@@ -262,11 +300,8 @@ def _render_focus_block(label, result, code, chart_timeframe):
     elif result.get("is_watch_candidate"):
         price = result.get("price")
         price_note = f"　現在の株価: {price}円" if price is not None else ""
-        ma20_note = "MA20を上回っています" if result.get("direction") == "short" else "MA20を下回っています"
-        st.warning(
-            f"監視銘柄です（反発モジュール: {ma20_note}。"
-            f"回復すればエントリー候補に昇格します）{price_note}"
-        )
+        watch_note = WATCH_REASON_LABELS.get(result.get("reason"), "監視中です")
+        st.warning(f"監視銘柄です（反発モジュール: {watch_note}）{price_note}")
     else:
         reason_label = SKIP_REASON_LABELS.get(result["reason"], result["reason"])
         price = result.get("price")
@@ -350,13 +385,13 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     # ラベル文字数に応じて調整する。"10日線"・"20日線"・"60日線"（数字2桁）・
     # "出来高"（漢字3文字）は"3日線"等（数字1桁）より横幅が必要で、
     # 同じ比率のままだと折り返してラベルが2行になってしまうため、
-    # 他より広めの比率を割り当てる
+    # 他より広めの比率を割り当てる。"100日線"（数字3桁）はさらに幅が必要
     (
         cb_candle, cb_sma3, cb_sma5, cb_sma7, cb_sma10,
-        cb_sma20, cb_sma60, cb_volume, cb_hover, _cb_spacer,
+        cb_sma20, cb_sma60, cb_sma100, cb_volume, cb_hover, _cb_spacer,
     ) = (
         st.columns(
-            [1.4, 0.9, 0.9, 0.9, 1.2, 1.2, 1.2, 1.1, 1.3, 4],
+            [1.4, 0.9, 0.9, 0.9, 1.2, 1.2, 1.2, 1.4, 1.1, 1.3, 2.5],
             gap="xxsmall", vertical_alignment="bottom",
         )
     )
@@ -376,6 +411,8 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         show_sma20 = _persistent_checkbox("20日線", "chart_pref_show_sma20", key_prefix)
     with cb_sma60:
         show_sma60 = _persistent_checkbox("60日線", "chart_pref_show_sma60", key_prefix)
+    with cb_sma100:
+        show_sma100 = _persistent_checkbox("100日線", "chart_pref_show_sma100", key_prefix)
     with cb_volume:
         show_volume = _persistent_checkbox("出来高", "chart_pref_show_volume", key_prefix)
     with cb_hover:
@@ -407,6 +444,7 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             ("sma10", show_sma10),
             ("sma20", show_sma20),
             ("sma60", show_sma60),
+            ("sma100", show_sma100),
         ]
         if show
     ]
@@ -521,8 +559,8 @@ with st.sidebar:
 
     timeframe = st.radio(
         "時間足",
-        options=["daily", "weekly"],
-        format_func=lambda t: "日足" if t == "daily" else "週足",
+        options=["daily", "weekly", "monthly"],
+        format_func=lambda t: TIMEFRAME_LABELS[t],
     )
 
     universe_labels = st.multiselect(
@@ -543,11 +581,12 @@ with st.sidebar:
     module_labels_inverse = {v: k for k, v in MODULE_LABELS.items()}
     modules = [module_labels_inverse[label] for label in module_labels]
 
-    ma_mode = "full"
+    ma_mode = "full_100"
     if "ma_order" in modules:
         ma_mode_label = st.radio(
             "並び順のバリエーション",
             options=list(MA_MODE_LABELS.values()),
+            index=list(MA_MODE_LABELS.keys()).index("full_100"),
         )
         ma_mode = MA_MODE_LABELS_INVERSE[ma_mode_label]
 
@@ -592,10 +631,12 @@ with st.sidebar:
 
     run_button = st.button("候補を更新", type="primary", use_container_width=True)
 
-# 個別銘柄検索の判定は、どのタブが表示中でも使えるようタブの外で評価しておく
+# 個別銘柄検索の判定は、どのタブが表示中でも使えるようタブの外で評価しておく。
+# 判断基準（modules）が未選択でも検索・チャート確認自体はできるようにする
+# （evaluate_single_stockが空リストならno_modules_selected扱いで返す）
 lookup_result = None
 
-if selected_code and modules:
+if selected_code:
     lookup_result = evaluate_single_stock(
         selected_code,
         direction=direction,
@@ -615,10 +656,16 @@ elif run_button:
     universe_display = "・".join(universe_labels)
 
     with st.spinner(f"{universe_display}をスキャン中..."):
-        st.session_state["candidates"] = get_today_candidates(
+        scan_stocks = _combine_universes(universe_labels)
+
+        # 候補一覧・監視銘柄候補（entry_signal_spec.md 6章「反発の手前」）を
+        # 1回の全銘柄スキャンでまとめて取得する（個別に呼ぶと全銘柄スキャンが
+        # 2回走ってしまうため）。監視銘柄候補は"bounce"を選択していない限り
+        # 常に空リストになる
+        scan_results = get_today_scan_results(
             direction=direction,
             timeframe=timeframe,
-            stocks=_combine_universes(universe_labels),
+            stocks=scan_stocks,
             modules=modules,
             ma_mode=ma_mode,
             min_volume=min_volume,
@@ -626,6 +673,9 @@ elif run_button:
             max_price=max_price,
             min_market_cap=min_market_cap,
         )
+        st.session_state["candidates"] = scan_results["candidates"]
+        st.session_state["watch_candidates"] = scan_results["watchlist"]
+
         st.session_state["direction"] = direction
         st.session_state["timeframe"] = timeframe
         st.session_state["universe_label"] = universe_display
@@ -637,6 +687,7 @@ elif run_button:
         st.session_state["scan_version"] = st.session_state.get("scan_version", 0) + 1
 
 candidates = st.session_state.get("candidates")
+watch_candidates = st.session_state.get("watch_candidates")
 
 
 tab_scan, tab_trades, tab_watchlist = st.tabs(["スキャン", "売買銘柄", "監視銘柄"])
@@ -673,13 +724,41 @@ with tab_scan:
             key=table_key,
         )
 
-        timeframe_label = "日足" if st.session_state["timeframe"] == "daily" else "週足"
+        timeframe_label = TIMEFRAME_LABELS[st.session_state["timeframe"]]
         st.caption(
             f"{len(candidates)}件の候補"
             f"（{st.session_state['direction']} / {timeframe_label} / "
             f"{st.session_state['universe_label']}） "
             "行をクリックするとチャートを表示します。"
         )
+
+    if watch_candidates:
+        st.divider()
+        st.caption("監視銘柄候補（反発の一歩手前）")
+
+        watch_rows = [
+            {"順位": rank, **_watch_candidate_row(candidate)}
+            for rank, candidate in enumerate(watch_candidates, start=1)
+        ]
+
+        # candidates_tableと同様、scan_versionをkeyに含めて選択状態をリセットする
+        watch_table_key = f"watch_candidates_table_{st.session_state.get('scan_version', 0)}"
+
+        st.dataframe(
+            pd.DataFrame(watch_rows),
+            use_container_width=True,
+            hide_index=True,
+            on_select=lambda: _on_candidate_table_select(watch_table_key, watch_candidates),
+            selection_mode="single-row",
+            key=watch_table_key,
+        )
+
+        st.caption(
+            f"{len(watch_candidates)}件の監視銘柄候補。行をクリックするとチャートを表示します。"
+        )
+    elif candidates is not None and "bounce" in modules:
+        st.divider()
+        st.caption("監視銘柄候補（反発の一歩手前）: 該当銘柄はありません。")
 
     # 確保しておいた表示位置に、確定したフォーカス銘柄（検索 or 候補選択）を描画する
     focus_mode = st.session_state.get("focus_mode")
@@ -721,9 +800,7 @@ with tab_scan:
         add_label = f"{add_candidate['code']} {add_candidate['company_name']}"
         st.caption(f"追加対象: {add_label}（上に表示中のチャートと同じ銘柄）")
 
-        add_timeframe_label = (
-            "日足" if add_candidate["timeframe"] == "daily" else "週足"
-        )
+        add_timeframe_label = TIMEFRAME_LABELS[add_candidate["timeframe"]]
 
         col_trade, col_watch = st.columns(2)
 
@@ -790,14 +867,18 @@ with tab_scan:
                         f"{add_label} は既に保有中（未決済）の売買銘柄として"
                         "登録されているため、監視銘柄には追加できません"
                     )
-                else:
-                    add_watchlist_stock(
-                        code=add_candidate["code"],
-                        company_name=add_candidate["company_name"],
-                        direction=add_candidate["direction"],
-                        timeframe=add_candidate["timeframe"],
-                        added_date=str(date.today()),
+                elif not add_watchlist_stock(
+                    code=add_candidate["code"],
+                    company_name=add_candidate["company_name"],
+                    direction=add_candidate["direction"],
+                    timeframe=add_candidate["timeframe"],
+                    added_date=str(date.today()),
+                ):
+                    st.warning(
+                        f"{add_label} は既に監視銘柄（{add_timeframe_label}）に"
+                        "登録済みです"
                     )
+                else:
                     st.success(f"{add_label} を監視銘柄（{add_timeframe_label}）に追加しました")
     elif candidates or (lookup_result is not None and "error" not in lookup_result):
         st.divider()
@@ -979,6 +1060,8 @@ def _render_trades_section():
                 timeframe=focus_trade["timeframe"],
                 added_date=str(date.today()),
             )
+            # 移動元の売買銘柄は、既に同じ監視銘柄が登録済みでスキップされた
+            # 場合でも常に削除する（「監視銘柄に戻す」操作の意図を優先する）
             delete_trade(focus_trade["id"])
             st.session_state["trades_chart_focus_id"] = None
             st.rerun()

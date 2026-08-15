@@ -9,9 +9,16 @@ from rules.entry_rule import evaluate_entry
 NO_PRICE_FILTER = {"min_price": 0, "max_price": float("inf")}
 
 
-def _base_df(sma5, sma20, sma60=None, close=None):
+def _base_df(sma5, sma20, sma60=None, sma100=None, close=None):
     length = len(sma5)
     close = close if close is not None else list(sma20)
+
+    # sma100は反発モジュール（監視銘柄判定でMA100上昇トレンドを見る）が
+    # 常に参照するため、明示指定が無ければcloseより十分低い単調増加のダミー値を
+    # 既定にしておく（MA100上昇トレンド条件を常に満たし、full_100モード関連の
+    # テストにも影響しないようにする）
+    if sma100 is None:
+        sma100 = [min(close) - 100 + i for i in range(length)]
 
     data = {
         "date": pd.date_range("2026-01-01", periods=length, freq="D"),
@@ -23,6 +30,7 @@ def _base_df(sma5, sma20, sma60=None, close=None):
         "volume_ratio": [2.5] * length,
         "sma5": sma5,
         "sma20": sma20,
+        "sma100": sma100,
     }
 
     if sma60 is not None:
@@ -101,6 +109,55 @@ def test_ma_order_full_mode_rejects_when_below_sma60():
     assert result["reason"] == "not_in_trend"
 
 
+def test_full_100_mode_rejects_when_below_sma100():
+    df = _base_df(
+        sma5=[10, 15],
+        sma20=[8, 12],
+        sma100=[20, 20.1],
+        close=[10.0, 15.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="full_100",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is False
+    assert result["reason"] == "not_in_trend"
+
+
+def test_full_100_mode_is_candidate_when_above_sma100():
+    df = _base_df(
+        sma5=[90, 100],
+        sma20=[80, 95],
+        sma100=[70, 71],
+        close=[90.0, 100.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="full_100",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is True
+
+
+def test_full_100_mode_short_is_candidate_when_below_sma100():
+    df = _base_df(
+        sma5=[110, 100],
+        sma20=[120, 105],
+        sma100=[130, 129],
+        close=[110.0, 100.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="short", modules=["ma_order"], ma_mode="full_100",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is True
+
+
 def test_bounce_module_alone_returns_watch_candidate():
     # MA20を少し下回った日（回復前）は監視銘柄として扱う
     df = _base_df(
@@ -112,6 +169,41 @@ def test_bounce_module_alone_returns_watch_candidate():
 
     assert result["is_entry_candidate"] is False
     assert result["is_watch_candidate"] is True
+    assert result["reason"] == "bounce_below_ma20_watch"
+
+
+def test_bounce_watch_is_not_shadowed_by_ma_order_not_in_trend():
+    # MA20割れ中はma_order（並び順）の「上向きに並ぶ」条件を満たさないため、
+    # 反発と並び順を同時に選択した場合でもnot_in_trendスキップより先に
+    # 反発の監視状態を優先し、監視銘柄として拾う
+    df = _base_df(
+        sma5=[110, 107, 104, 101.5, 102.0],
+        sma20=[100.0, 100.4, 100.8, 101.2, 102.2],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["ma_order", "bounce"], ma_mode="two_line",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is False
+    assert result["is_watch_candidate"] is True
+    assert result["reason"] == "bounce_below_ma20_watch"
+
+
+def test_bounce_module_alone_returns_approaching_watch_before_reversal():
+    # まだMA20を割っておらず反転前（下落3営業日以上＋接近判定）の日は
+    # 「反発の手前」として監視銘柄になる
+    df = _base_df(
+        sma5=[110, 107, 104, 101.5],
+        sma20=[100.0, 100.4, 100.8, 101.2],
+    )
+
+    result = evaluate_entry(df, direction="long", modules=["bounce"], **NO_PRICE_FILTER)
+
+    assert result["is_entry_candidate"] is False
+    assert result["is_watch_candidate"] is True
+    assert result["reason"] == "bounce_approaching_watch"
 
 
 def test_bounce_module_alone_promotes_to_candidate_on_recovery_day():
@@ -132,6 +224,9 @@ def test_bounce_module_alone_returns_watch_candidate_for_short():
     df = _base_df(
         sma5=[90, 93, 96, 98.5, 98.0],
         sma20=[100.0, 99.6, 99.2, 98.8, 97.8],
+        # ショートの監視判定はMA100下降トレンド（終値がMA100より下）を要求するため、
+        # closeより十分高い単調減少のsma100を明示する
+        sma100=[150, 149, 148, 147, 146],
     )
 
     result = evaluate_entry(df, direction="short", modules=["bounce"], **NO_PRICE_FILTER)

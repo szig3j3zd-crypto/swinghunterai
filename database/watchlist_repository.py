@@ -45,10 +45,45 @@ def create_table():
     conn.close()
 
 
+def watchlist_stock_exists(code, direction, timeframe):
+    """
+    同じ銘柄コード・方向・時間足の監視銘柄が既に登録済みか確認する
+    """
+
+    conn = create_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT 1 FROM watchlist
+        WHERE code = ? AND direction = ? AND timeframe = ?
+        LIMIT 1
+        """,
+        (code, direction, timeframe)
+    )
+
+    exists = cursor.fetchone() is not None
+
+    conn.close()
+
+    return exists
+
+
 def add_watchlist_stock(code, company_name, direction, timeframe, added_date):
     """
     監視銘柄を1件登録する
+
+    同じ銘柄コード・方向・時間足が既に登録済みの場合は二重登録せずスキップする
+
+    Returns
+    -------
+    added
+        実際に登録した場合True、既に登録済みでスキップした場合False
     """
+
+    if watchlist_stock_exists(code, direction, timeframe):
+        return False
 
     conn = create_connection()
 
@@ -78,6 +113,8 @@ def add_watchlist_stock(code, company_name, direction, timeframe, added_date):
 
     conn.commit()
     conn.close()
+
+    return True
 
 
 def update_watchlist_timeframe(watchlist_id, timeframe):

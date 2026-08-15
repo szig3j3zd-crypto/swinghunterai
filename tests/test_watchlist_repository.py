@@ -5,6 +5,7 @@ from database.watchlist_repository import (
     delete_watchlist_stocks_by_code,
     get_all_watchlist_stocks,
     update_watchlist_timeframe,
+    watchlist_stock_exists,
 )
 
 
@@ -38,6 +39,35 @@ def test_add_delete_watchlist_stock_roundtrip():
         delete_watchlist_stock(added["id"])
 
     assert not any(s["id"] == added["id"] for s in get_all_watchlist_stocks())
+
+
+def test_add_watchlist_stock_skips_duplicate_code_direction_timeframe():
+    create_table()
+
+    added = add_watchlist_stock(
+        code="9998",
+        company_name="テスト銘柄3",
+        direction="long",
+        timeframe="daily",
+        added_date="2000-01-01",
+    )
+    duplicate_added = add_watchlist_stock(
+        code="9998",
+        company_name="テスト銘柄3",
+        direction="long",
+        timeframe="daily",
+        added_date="2000-01-02",
+    )
+
+    try:
+        assert added is True
+        assert duplicate_added is False
+        assert sum(1 for s in get_all_watchlist_stocks() if s["code"] == "9998") == 1
+        assert watchlist_stock_exists("9998", "long", "daily") is True
+        assert watchlist_stock_exists("9998", "short", "daily") is False
+
+    finally:
+        delete_watchlist_stocks_by_code("9998")
 
 
 def test_delete_watchlist_stocks_by_code_removes_all_matching_entries():

@@ -9,6 +9,8 @@ from service.screening_service import (
     get_prime_stocks,
     get_stock_chart_data,
     get_today_candidates,
+    get_today_scan_results,
+    get_today_watchlist,
 )
 
 
@@ -51,11 +53,73 @@ def test_candidates_are_sorted_by_score_descending():
     assert scores == sorted(scores, reverse=True)
 
 
+def test_get_today_watchlist_runs_on_a_small_universe():
+    stocks = get_active_stocks().head(3)
+
+    watchlist = get_today_watchlist(
+        direction="long", stocks=stocks, modules=["ma_order", "bounce"],
+    )
+
+    assert isinstance(watchlist, list)
+
+    for watch_item in watchlist:
+        assert watch_item["is_watch_candidate"] is True
+        assert watch_item["is_entry_candidate"] is False
+        assert "code" in watch_item
+        assert "company_name" in watch_item
+
+
+def test_get_today_watchlist_is_always_empty_without_bounce_module():
+    stocks = get_active_stocks().head(3)
+
+    watchlist = get_today_watchlist(direction="long", stocks=stocks, modules=["ma_order"])
+
+    assert watchlist == []
+
+
+def test_get_today_scan_results_matches_separate_calls():
+    stocks = get_active_stocks().head(10)
+
+    result = get_today_scan_results(
+        direction="long", stocks=stocks, modules=["ma_order", "bounce"], min_market_cap=0,
+    )
+
+    assert set(result.keys()) == {"candidates", "watchlist"}
+
+    expected_candidates = get_today_candidates(
+        direction="long", stocks=stocks, modules=["ma_order", "bounce"], min_market_cap=0,
+    )
+    expected_watchlist = get_today_watchlist(
+        direction="long", stocks=stocks, modules=["ma_order", "bounce"],
+    )
+
+    assert [c["code"] for c in result["candidates"]] == [c["code"] for c in expected_candidates]
+    assert (
+        sorted(w["code"] for w in result["watchlist"])
+        == sorted(w["code"] for w in expected_watchlist)
+    )
+    assert all(c["is_entry_candidate"] for c in result["candidates"])
+    assert all(w["is_watch_candidate"] for w in result["watchlist"])
+
+
 def test_evaluate_single_stock_returns_error_for_unknown_code():
     result = evaluate_single_stock("0000")
 
     assert result["code"] == "0000"
     assert "error" in result
+
+
+def test_evaluate_single_stock_with_empty_modules_skips_judgment():
+    code = get_active_stocks().iloc[0]["code"]
+
+    result = evaluate_single_stock(code, direction="long", modules=[])
+
+    assert result["code"] == code
+    assert "company_name" in result
+    assert result.get("no_modules_selected") is True
+    assert result["direction"] == "long"
+    assert "is_entry_candidate" not in result
+    assert "price" in result
 
 
 def test_evaluate_single_stock_returns_result_for_known_code():
@@ -75,7 +139,7 @@ def test_get_stock_chart_data_returns_ohlcv_and_moving_averages():
     df = get_stock_chart_data(code, timeframe="daily")
 
     for column in ["date", "open", "high", "low", "close", "volume",
-                   "sma5", "sma20", "sma60"]:
+                   "sma5", "sma20", "sma60", "sma100"]:
         assert column in df.columns
 
     assert list(df["date"]) == sorted(df["date"])
@@ -88,6 +152,15 @@ def test_get_stock_chart_data_weekly_has_fewer_rows_than_daily():
     weekly = get_stock_chart_data(code, timeframe="weekly")
 
     assert len(weekly) < len(daily)
+
+
+def test_get_stock_chart_data_monthly_has_fewer_rows_than_weekly():
+    code = get_active_stocks().iloc[0]["code"]
+
+    weekly = get_stock_chart_data(code, timeframe="weekly")
+    monthly = get_stock_chart_data(code, timeframe="monthly")
+
+    assert len(monthly) < len(weekly)
 
 
 def test_format_reason_joins_module_labels():

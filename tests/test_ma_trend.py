@@ -142,3 +142,39 @@ def test_two_line_mode_short_ignores_sma60_order():
 
     assert is_short_trend(df, ma_mode="two_line") is True
     assert is_short_trend(df, ma_mode="full") is False
+
+
+def _df_100(sma5, sma20, sma100):
+    return pd.DataFrame({"sma5": sma5, "sma20": sma20, "sma100": sma100})
+
+
+def test_full_100_mode_long_uses_sma100_instead_of_sma60():
+    # sma60（未使用）が並び順を崩していても、full_100モードはsma100だけを見る
+    df = _df_100(
+        sma5=[10, 15],
+        sma20=[8, 12],
+        sma100=[5, 10],
+    )
+    df["sma60"] = [20, 20]  # full_100モードなら参照されず無視される
+
+    assert is_long_trend(df, ma_mode="full_100") is True
+
+
+def test_full_100_mode_long_false_when_price_order_broken():
+    df = _df_100(
+        sma5=[10, 15],
+        sma20=[8, 12],
+        sma100=[20, 20.1],  # 5>20>100の並び順を崩す
+    )
+
+    assert is_long_trend(df, ma_mode="full_100") is False
+
+
+def test_full_100_mode_short_uses_sma100_instead_of_sma60():
+    df = _df_100(
+        sma5=[15, 10],
+        sma20=[20, 15],
+        sma100=[30, 25],
+    )
+
+    assert is_short_trend(df, ma_mode="full_100") is True

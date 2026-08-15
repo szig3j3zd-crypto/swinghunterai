@@ -33,7 +33,8 @@ def find_historical_signals(df, direction, min_history=100, timeframe="daily",
         （並び順＋完全ゴールデンクロス）を使う
 
     ma_mode
-        "ma_order"選択時の並び順バリエーション。"full"（デフォルト）または"two_line"
+        "ma_order"選択時の並び順バリエーション。"full"（デフォルト）、"two_line"、
+        "full_100"のいずれか
 
     bounce_merge_within
         近接した反発をまとめる間隔（行数ベース）。Noneならconfig既定値を使う
@@ -175,7 +176,8 @@ def run_backtest(df, direction, min_history=100, max_holding_days=None,
         （並び順＋完全ゴールデンクロス）を使う
 
     ma_mode
-        "ma_order"選択時の並び順バリエーション。"full"（デフォルト）または"two_line"
+        "ma_order"選択時の並び順バリエーション。"full"（デフォルト）、"two_line"、
+        "full_100"のいずれか
 
     bounce_merge_within
         近接した反発をまとめる間隔（行数ベース）。Noneならconfig既定値を使う

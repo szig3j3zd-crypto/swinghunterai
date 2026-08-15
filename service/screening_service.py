@@ -5,7 +5,7 @@ from data.market_cap_reader import get_market_cap
 from database.stock_master_reader import get_active_stocks
 from database.stock_price_reader import get_stock_data
 from indicators.moving_average import calculate_moving_average
-from indicators.resample import resample_to_weekly
+from indicators.resample import resample_to_monthly, resample_to_weekly
 from indicators.volume import calculate_volume_indicators
 from rules.entry_rule import evaluate_entry
 from rules.screening_filters import market_cap_filter_is_active, passes_market_cap_filter
@@ -94,13 +94,18 @@ def get_prime_stocks():
     return stocks[stocks["market"] == "プライム（内国株式）"]
 
 
-def get_today_candidates(direction="long", stocks=None, min_history=100,
-                          timeframe="daily", modules=None, ma_mode="full",
-                          min_volume=None, min_price=None,
-                          max_price=None, min_market_cap=None, max_market_cap=None):
+def get_today_scan_results(direction="long", stocks=None, min_history=100,
+                            timeframe="daily", modules=None, ma_mode="full",
+                            min_volume=None, min_price=None,
+                            max_price=None, min_market_cap=None, max_market_cap=None):
 
     """
-    今日の売買候補を抽出する
+    今日の売買候補・監視銘柄候補を1回の全銘柄スキャンでまとめて抽出する
+
+    候補と監視銘柄の両方が欲しい場合はget_today_candidates()・
+    get_today_watchlist()を個別に呼ぶと全銘柄へのevaluate_entry呼び出しが
+    2回走ってしまう（東証プライム全体で1回あたり約90秒）。1回のスキャンで
+    両方を仕分けることでこれを避ける
 
     Parameters
     ----------
@@ -115,15 +120,20 @@ def get_today_candidates(direction="long", stocks=None, min_history=100,
         指標が安定するまでの最低必要行数。これに満たない銘柄はスキップする
 
     timeframe
-        "daily" または "weekly"。判定に使う足（日足 or 週足リサンプル）の選択に使う
+        "daily"・"weekly"・"monthly"のいずれか。判定に使う足
+        （日足 or 週足/月足リサンプル）の選択に使う
 
     modules
         使用するモジュール名のリスト。Noneならconfig既定値
         （DEFAULT_MODULES = 並び順＋完全ゴールデンクロス）を使う。
-        entry_signal_spec.mdの各モジュール定義を参照
+        entry_signal_spec.mdの各モジュール定義を参照。監視銘柄候補は
+        entry_signal_spec.md 6章の反発モジュールでのみ発生するため、
+        "bounce"モジュールを含まないmodulesを指定した場合、"watchlist"は
+        常に空リストになる
 
     ma_mode
-        "ma_order"選択時の並び順バリエーション。"full"（デフォルト）または"two_line"
+        "ma_order"選択時の並び順バリエーション。"full"（デフォルト）、"two_line"、
+        "full_100"のいずれか
 
     min_volume, min_price, max_price
         出来高・株価フィルタの上書き値。Noneならconfig既定値を使う
@@ -131,13 +141,15 @@ def get_today_candidates(direction="long", stocks=None, min_history=100,
     min_market_cap, max_market_cap
         時価総額フィルタの上書き値（円）。Noneならconfig既定値を使う。
         DBに時価総額を保存していないため、他の条件を通過した候補にのみ
-        Yahoo Financeへライブ問い合わせして絞り込む（全銘柄には適用しない）
+        Yahoo Financeへライブ問い合わせして絞り込む（全銘柄には適用しない。
+        監視銘柄候補には時価総額フィルタを適用しない）
 
     Returns
     -------
-    candidates
-        スコア降順に並んだ候補のリスト（dict）。
-        code, company_name と evaluate_entry() の戻り値を含む
+    result
+        "candidates"（スコア降順の候補リスト）・"watchlist"（監視銘柄候補
+        リスト）のキーを持つdict。各要素はcode, company_name と
+        evaluate_entry() の戻り値を含む
     """
 
     if stocks is None:
@@ -147,6 +159,7 @@ def get_today_candidates(direction="long", stocks=None, min_history=100,
         modules = DEFAULT_MODULES
 
     candidates = []
+    watchlist = []
     ticker_by_code = {}
 
     for _, stock in stocks.iterrows():
@@ -168,50 +181,7 @@ def get_today_candidates(direction="long", stocks=None, min_history=100,
                     "timeframe": timeframe,
                     **result,
                 })
-
-        except Exception:
-            continue
-
-    candidates = _filter_by_market_cap(
-        candidates, ticker_by_code, min_market_cap, max_market_cap
-    )
-
-    candidates.sort(key=lambda c: c["score"]["total_score"], reverse=True)
-
-    return candidates
-
-
-def get_today_watchlist(direction="long", stocks=None, min_history=100,
-                         timeframe="daily", modules=None, ma_mode="full",
-                         min_volume=None, min_price=None, max_price=None):
-
-    """
-    今日の監視銘柄（反発モジュールでMA20を下回っている最中の銘柄）を抽出する
-
-    entry_signal_spec.md 5章の反発モジュールでのみ発生する。
-    "bounce"モジュールを含まないmodulesを指定した場合は常に空リストを返す
-    """
-
-    if stocks is None:
-        stocks = get_prime_stocks()
-
-    if modules is None:
-        modules = DEFAULT_MODULES
-
-    watchlist = []
-
-    for _, stock in stocks.iterrows():
-
-        code = stock["code"]
-        company_name = stock["company_name"]
-
-        try:
-            result = _evaluate_stock(
-                code, direction, timeframe, min_history, modules, ma_mode,
-                min_volume, min_price, max_price,
-            )
-
-            if result.get("is_watch_candidate"):
+            elif result.get("is_watch_candidate"):
                 watchlist.append({
                     "code": code,
                     "company_name": company_name,
@@ -222,7 +192,73 @@ def get_today_watchlist(direction="long", stocks=None, min_history=100,
         except Exception:
             continue
 
-    return watchlist
+    candidates = _filter_by_market_cap(
+        candidates, ticker_by_code, min_market_cap, max_market_cap
+    )
+
+    candidates.sort(key=lambda c: c["score"]["total_score"], reverse=True)
+
+    return {"candidates": candidates, "watchlist": watchlist}
+
+
+def get_today_candidates(direction="long", stocks=None, min_history=100,
+                          timeframe="daily", modules=None, ma_mode="full",
+                          min_volume=None, min_price=None,
+                          max_price=None, min_market_cap=None, max_market_cap=None):
+
+    """
+    今日の売買候補を抽出する
+
+    候補だけでなく監視銘柄候補（get_today_watchlist）も同時に必要な場合は、
+    全銘柄スキャンが2回走ってしまうのを避けるためget_today_scan_results()を
+    使うこと。引数はget_today_scan_results()と同じ
+    """
+
+    return get_today_scan_results(
+        direction=direction, stocks=stocks, min_history=min_history,
+        timeframe=timeframe, modules=modules, ma_mode=ma_mode,
+        min_volume=min_volume, min_price=min_price, max_price=max_price,
+        min_market_cap=min_market_cap, max_market_cap=max_market_cap,
+    )["candidates"]
+
+
+def get_today_watchlist(direction="long", stocks=None, min_history=100,
+                         timeframe="daily", modules=None, ma_mode="full",
+                         min_volume=None, min_price=None, max_price=None):
+
+    """
+    今日の監視銘柄候補（反発モジュールの「反発の一歩手前」の銘柄）を抽出する
+
+    entry_signal_spec.md 6章の反発モジュールでのみ発生する
+    （MA20を割らずに接近中で反転前の銘柄、MA20を割ってから回復待ちの銘柄の両方を含む）。
+    "bounce"モジュールを含まないmodulesを指定した場合は常に空リストを返す。
+
+    候補（get_today_candidates）も同時に必要な場合は、全銘柄スキャンが2回
+    走ってしまうのを避けるためget_today_scan_results()を使うこと
+    """
+
+    return get_today_scan_results(
+        direction=direction, stocks=stocks, min_history=min_history,
+        timeframe=timeframe, modules=modules, ma_mode=ma_mode,
+        min_volume=min_volume, min_price=min_price, max_price=max_price,
+    )["watchlist"]
+
+
+def _resample_for_timeframe(df, timeframe):
+
+    """
+    timeframeに応じて日足データをリサンプルする（"daily"はそのまま）
+
+    get_stock_chart_data()・_evaluate_stock()共通の処理
+    """
+
+    if timeframe == "weekly":
+        return resample_to_weekly(df)
+
+    if timeframe == "monthly":
+        return resample_to_monthly(df)
+
+    return df
 
 
 def get_stock_chart_data(code, timeframe="daily"):
@@ -236,19 +272,17 @@ def get_stock_chart_data(code, timeframe="daily"):
         銘柄コード
 
     timeframe
-        "daily" または "weekly"
+        "daily"・"weekly"・"monthly"のいずれか
 
     Returns
     -------
     df
         date, open, high, low, close, volume, sma3, sma5, sma7, sma10,
-        sma20, sma60 列を持つDataFrame（日付順ソート済み）
+        sma20, sma60, sma100 列を持つDataFrame（日付順ソート済み）
     """
 
     df = get_stock_data(code)
-
-    if timeframe == "weekly":
-        df = resample_to_weekly(df)
+    df = _resample_for_timeframe(df, timeframe)
 
     df = calculate_moving_average(df)
     df = calculate_volume_indicators(df)
@@ -271,13 +305,19 @@ def evaluate_single_stock(code, direction="long", timeframe="daily", min_history
     code
         銘柄コード
 
+    modules
+        Noneならconfig既定値（DEFAULT_MODULES）を使う。空リスト[]を明示的に
+        渡した場合は判定を行わず、チャート確認だけできるよう銘柄情報・現在株価
+        （no_modules_selected=True）を返す（他の引数はget_today_candidates()と同じ）
+
     その他
         get_today_candidates()と同じ
 
     Returns
     -------
     result
-        code, company_name と evaluate_entry() の戻り値を持つdict。
+        code, company_name と evaluate_entry() の戻り値を持つdict
+        （modules=[]の場合はno_modules_selected・priceのみ）。
         銘柄が見つからない、または評価に必要なデータが不足している場合は
         error キーにメッセージを持つdict
     """
@@ -292,6 +332,26 @@ def evaluate_single_stock(code, direction="long", timeframe="daily", min_history
         return {"code": code, "error": "銘柄が見つかりません"}
 
     company_name = matched.iloc[0]["company_name"]
+
+    if not modules:
+        try:
+            df = _resample_for_timeframe(get_stock_data(code), timeframe)
+            price = df["close"].iloc[-1]
+        except Exception:
+            return {
+                "code": code,
+                "company_name": company_name,
+                "error": "株価データが不足しているため評価できません",
+            }
+
+        return {
+            "code": code,
+            "company_name": company_name,
+            "timeframe": timeframe,
+            "direction": direction,
+            "no_modules_selected": True,
+            "price": price,
+        }
 
     try:
         result = _evaluate_stock(
@@ -323,9 +383,7 @@ def _evaluate_stock(code, direction, timeframe, min_history, modules, ma_mode,
     """
 
     df = get_stock_data(code)
-
-    if timeframe == "weekly":
-        df = resample_to_weekly(df)
+    df = _resample_for_timeframe(df, timeframe)
 
     if len(df) < min_history:
         raise ValueError("insufficient_history")
