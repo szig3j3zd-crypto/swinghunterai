@@ -72,6 +72,23 @@ def test_sma60_is_nan_when_not_enough_history():
     assert result["sma60"].isna().all()
 
 
+def test_sma100_matches_manual_average():
+    df = _price_series(101)
+
+    result = calculate_moving_average(df)
+
+    # close = [1..101] -> 直近100件の平均
+    assert result["sma100"].iloc[-1] == sum(range(2, 102)) / 100
+
+
+def test_sma100_is_nan_when_not_enough_history():
+    df = _price_series(10)
+
+    result = calculate_moving_average(df)
+
+    assert result["sma100"].isna().all()
+
+
 def test_sma300_is_nan_when_not_enough_history():
     df = _price_series(10)
 
