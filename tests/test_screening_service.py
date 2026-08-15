@@ -77,6 +77,41 @@ def test_get_today_watchlist_is_always_empty_without_bounce_module():
     assert watchlist == []
 
 
+def test_get_today_scan_results_with_empty_modules_skips_judgment():
+    stocks = get_active_stocks().head(5)
+
+    # min_market_cap=0: 時価総額フィルタ（config既定で有効）を無効化し、
+    # テストがYahoo Financeへライブ通信するのを防ぐ
+    result = get_today_scan_results(
+        direction="long", stocks=stocks, modules=[],
+        min_volume=0, min_price=0, max_price=float("inf"), min_market_cap=0,
+    )
+
+    assert result["watchlist"] == []
+
+    for candidate in result["candidates"]:
+        assert candidate.get("no_modules_selected") is True
+        assert "code" in candidate
+        assert "company_name" in candidate
+        assert "price" in candidate
+        assert "score" not in candidate
+
+    assert [c["code"] for c in result["candidates"]] == sorted(
+        c["code"] for c in result["candidates"]
+    )
+
+
+def test_get_today_scan_results_with_empty_modules_applies_price_filter():
+    stocks = get_active_stocks().head(5)
+
+    result = get_today_scan_results(
+        direction="long", stocks=stocks, modules=[],
+        min_volume=0, min_price=0, max_price=0,
+    )
+
+    assert result["candidates"] == []
+
+
 def test_get_today_scan_results_matches_separate_calls():
     stocks = get_active_stocks().head(10)
 

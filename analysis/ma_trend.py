@@ -9,12 +9,13 @@ def get_ma_order_series(df, ma_mode="full"):
     Parameters
     ----------
     df
-        sma5, sma20（ma_mode="full"ならさらにsma60、"full_100"ならさらにsma100）
-        列を持つ株価DataFrame（日付順ソート済み）
+        sma5, sma20（ma_mode="full"ならさらにsma60、"full_100"・"pullback_100"
+        ならさらにsma100）列を持つ株価DataFrame（日付順ソート済み）
 
     ma_mode
         "full"（5>20>60の3本、デフォルト） または "two_line"（5>20の2本のみ）
-        または "full_100"（5>20>100の3本）
+        または "full_100"（5>20>100の3本） または "pullback_100"
+        （20>5>100の押し目パターン）
 
     Returns
     -------
@@ -26,6 +27,9 @@ def get_ma_order_series(df, ma_mode="full"):
     if ma_mode == "two_line":
         is_long = df["sma5"] > df["sma20"]
         is_short = df["sma20"] > df["sma5"]
+    elif ma_mode == "pullback_100":
+        is_long = (df["sma20"] > df["sma5"]) & (df["sma5"] > df["sma100"])
+        is_short = (df["sma100"] > df["sma5"]) & (df["sma5"] > df["sma20"])
     else:
         long_column = "sma100" if ma_mode == "full_100" else "sma60"
         is_long = (df["sma5"] > df["sma20"]) & (df["sma20"] > df[long_column])
@@ -76,6 +80,11 @@ def _trend_columns(ma_mode):
     if ma_mode == "full_100":
         return ("sma5", "sma20", "sma100")
 
+    if ma_mode == "pullback_100":
+        # 押し目パターンはMA5が下向き（下落中）でも成立するため、
+        # 傾き条件はMA20・MA100のみに課す
+        return ("sma20", "sma100")
+
     return ("sma5", "sma20", "sma60")
 
 
@@ -87,6 +96,8 @@ def is_long_trend_series(df, slope_lookback=1, ma_mode="full"):
     ma_mode="full"（デフォルト）: 上から5>20>60の順で並び、かつ各MAが上向き
     ma_mode="two_line": 上から5>20の順で並び、かつMA5・MA20とも上向き
     ma_mode="full_100": 上から5>20>100の順で並び、かつ各MAが上向き
+    ma_mode="pullback_100": 上から20>5>100の順で並び（押し目）、MA20・MA100が
+    上向き（MA5の傾きは問わない）
     """
 
     order = get_ma_order_series(df, ma_mode=ma_mode)
@@ -108,6 +119,8 @@ def is_short_trend_series(df, slope_lookback=1, ma_mode="full"):
     ma_mode="full"（デフォルト）: 上から60>20>5の順で並び、かつ各MAが下向き
     ma_mode="two_line": 上から20>5の順で並び、かつMA5・MA20とも下向き
     ma_mode="full_100": 上から100>20>5の順で並び、かつ各MAが下向き
+    ma_mode="pullback_100": 上から100>5>20の順で並び（戻り目）、MA20・MA100が
+    下向き（MA5の傾きは問わない）
     """
 
     order = get_ma_order_series(df, ma_mode=ma_mode)

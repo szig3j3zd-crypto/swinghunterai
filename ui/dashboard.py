@@ -88,6 +88,7 @@ WATCH_REASON_LABELS = {
 MA_MODE_LABELS = {
     "full": "3本版（5>20>60）",
     "full_100": "3本版（5>20>100）",
+    "pullback_100": "押し目版（20>5>100）",
     "two_line": "2本版（5>20のみ）",
 }
 MA_MODE_LABELS_INVERSE = {v: k for k, v in MA_MODE_LABELS.items()}
@@ -171,7 +172,17 @@ def _candidate_row(candidate):
 
     """
     候補1件を表示用のdictに変換する
+
+    判断基準が未選択（no_modules_selected）の場合は、出来高・株価フィルタを
+    通過しただけの銘柄一覧のため、スコアや損切/利確価格は持たない
     """
+
+    if candidate.get("no_modules_selected"):
+        return {
+            "コード": candidate["code"],
+            "銘柄名": candidate["company_name"],
+            "株価": candidate["price"],
+        }
 
     risk_reward = candidate["risk_reward_ratio"]
 
@@ -650,8 +661,6 @@ if selected_code:
 
 if run_button and not universe_labels:
     st.error("サイドバーの「採用指数」を1つ以上選択してください。")
-elif run_button and not modules:
-    st.error("サイドバーの「判断基準」を1つ以上選択してください。")
 elif run_button:
     universe_display = "・".join(universe_labels)
 
@@ -675,6 +684,7 @@ elif run_button:
         )
         st.session_state["candidates"] = scan_results["candidates"]
         st.session_state["watch_candidates"] = scan_results["watchlist"]
+        st.session_state["scan_used_modules"] = bool(modules)
 
         st.session_state["direction"] = direction
         st.session_state["timeframe"] = timeframe
@@ -693,7 +703,12 @@ watch_candidates = st.session_state.get("watch_candidates")
 tab_scan, tab_trades, tab_watchlist = st.tabs(["スキャン", "売買銘柄", "監視銘柄"])
 
 with tab_scan:
-    st.caption("今日の買い候補一覧")
+    scan_used_modules = st.session_state.get("scan_used_modules", True)
+
+    if scan_used_modules:
+        st.caption("今日の買い候補一覧")
+    else:
+        st.caption("銘柄一覧（判断基準が未選択のため、出来高・株価フィルタのみ適用）")
 
     # チャート・判定結果の表示位置は候補一覧より上のまま固定する。
     # 検索 or 候補一覧からの選択、どちらで内容を決めるかは候補一覧を
@@ -704,7 +719,10 @@ with tab_scan:
     if candidates is None:
         st.info("サイドバーの「候補を更新」を押してください。")
     elif not candidates:
-        st.warning("本日の候補はありません。")
+        if scan_used_modules:
+            st.warning("本日の候補はありません。")
+        else:
+            st.warning("条件に合う銘柄がありません。")
     else:
         rows = [
             {"順位": rank, **_candidate_row(candidate)}

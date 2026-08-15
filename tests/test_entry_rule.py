@@ -158,6 +158,58 @@ def test_full_100_mode_short_is_candidate_when_below_sma100():
     assert result["is_entry_candidate"] is True
 
 
+def test_pullback_100_mode_is_candidate_when_above_sma100():
+    # 押し目版: 20>5>100の並びでMA5が下向きでも、MA20・MA100が上向きなら候補になる
+    df = _base_df(
+        sma5=[12, 10],
+        sma20=[15, 16],
+        sma100=[8, 9],
+        close=[12.0, 10.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="pullback_100",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is True
+
+
+def test_pullback_100_mode_rejects_when_price_below_sma100():
+    # 並び順・傾きは満たしていても、当日の株価が100日線を下回っていれば
+    # 9章の100日線フィルタで除外する
+    df = _base_df(
+        sma5=[12, 10],
+        sma20=[15, 16],
+        sma100=[8, 9],
+        close=[12.0, 8.5],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="pullback_100",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is False
+    assert result["reason"] == "below_sma100"
+
+
+def test_pullback_100_mode_short_is_candidate_when_below_sma100():
+    df = _base_df(
+        sma5=[10, 12],
+        sma20=[8, 7],
+        sma100=[15, 14],
+        close=[10.0, 12.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="short", modules=["ma_order"], ma_mode="pullback_100",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is True
+
+
 def test_bounce_module_alone_returns_watch_candidate():
     # MA20を少し下回った日（回復前）は監視銘柄として扱う
     df = _base_df(

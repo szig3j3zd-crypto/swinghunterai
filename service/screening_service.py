@@ -8,12 +8,17 @@ from indicators.moving_average import calculate_moving_average
 from indicators.resample import resample_to_monthly, resample_to_weekly
 from indicators.volume import calculate_volume_indicators
 from rules.entry_rule import evaluate_entry
-from rules.screening_filters import market_cap_filter_is_active, passes_market_cap_filter
+from rules.screening_filters import (
+    market_cap_filter_is_active,
+    passes_market_cap_filter,
+    passes_price_filter,
+    passes_volume_filter,
+)
 
 MARKET_CAP_FETCH_WORKERS = 8
 
-# モジュール未指定時のデフォルト（並び順3本版＋完全ゴールデンクロス）
-DEFAULT_MODULES = ("ma_order", "perfect_golden_cross")
+# モジュール未指定時のデフォルト（並び順のみ）
+DEFAULT_MODULES = ("ma_order",)
 
 MODULE_LABELS = {
     "ma_order": "並び順",
@@ -125,11 +130,13 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
 
     modules
         使用するモジュール名のリスト。Noneならconfig既定値
-        （DEFAULT_MODULES = 並び順＋完全ゴールデンクロス）を使う。
+        （DEFAULT_MODULES = 並び順のみ）を使う。
         entry_signal_spec.mdの各モジュール定義を参照。監視銘柄候補は
         entry_signal_spec.md 6章の反発モジュールでのみ発生するため、
         "bounce"モジュールを含まないmodulesを指定した場合、"watchlist"は
-        常に空リストになる
+        常に空リストになる。空リスト[]を明示的に渡した場合はRule Engineでの
+        判定を行わず、出来高・株価フィルタを通過した銘柄をそのまま
+        "candidates"に含める（no_modules_selected=True、score等は持たない）
 
     ma_mode
         "ma_order"選択時の並び順バリエーション。"full"（デフォルト）、"two_line"、
@@ -169,6 +176,31 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
         ticker_by_code[code] = stock["ticker"]
 
         try:
+            if not modules:
+                # 判断基準が未選択の場合はRule Engineを使わず、出来高・株価
+                # フィルタだけを通過した銘柄をそのまま一覧に含める
+                price, volume = _fetch_current_price_and_volume(
+                    code, timeframe, min_history
+                )
+
+                if not passes_volume_filter(volume, min_volume=min_volume):
+                    continue
+
+                if not passes_price_filter(
+                    price, min_price=min_price, max_price=max_price
+                ):
+                    continue
+
+                candidates.append({
+                    "code": code,
+                    "company_name": company_name,
+                    "timeframe": timeframe,
+                    "direction": direction,
+                    "no_modules_selected": True,
+                    "price": price,
+                })
+                continue
+
             result = _evaluate_stock(
                 code, direction, timeframe, min_history, modules, ma_mode,
                 min_volume, min_price, max_price,
@@ -196,7 +228,11 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
         candidates, ticker_by_code, min_market_cap, max_market_cap
     )
 
-    candidates.sort(key=lambda c: c["score"]["total_score"], reverse=True)
+    if modules:
+        candidates.sort(key=lambda c: c["score"]["total_score"], reverse=True)
+    else:
+        # 判断基準なしはスコアを持たないため、銘柄コード順に並べる
+        candidates.sort(key=lambda c: c["code"])
 
     return {"candidates": candidates, "watchlist": watchlist}
 
@@ -335,8 +371,7 @@ def evaluate_single_stock(code, direction="long", timeframe="daily", min_history
 
     if not modules:
         try:
-            df = _resample_for_timeframe(get_stock_data(code), timeframe)
-            price = df["close"].iloc[-1]
+            price, _ = _fetch_current_price_and_volume(code, timeframe, min_history)
         except Exception:
             return {
                 "code": code,
@@ -371,6 +406,22 @@ def evaluate_single_stock(code, direction="long", timeframe="daily", min_history
         "timeframe": timeframe,
         **result,
     }
+
+
+def _fetch_current_price_and_volume(code, timeframe, min_history):
+
+    """
+    直近の株価・出来高だけを取得する（判断基準未選択時、Rule Engineを
+    使わずに済ませるための軽量版。指標計算は行わない）
+    """
+
+    df = get_stock_data(code)
+    df = _resample_for_timeframe(df, timeframe)
+
+    if len(df) < min_history:
+        raise ValueError("insufficient_history")
+
+    return df["close"].iloc[-1], df["volume"].iloc[-1]
 
 
 def _evaluate_stock(code, direction, timeframe, min_history, modules, ma_mode,

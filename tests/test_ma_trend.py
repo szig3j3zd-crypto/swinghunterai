@@ -178,3 +178,44 @@ def test_full_100_mode_short_uses_sma100_instead_of_sma60():
     )
 
     assert is_short_trend(df, ma_mode="full_100") is True
+
+
+def test_pullback_100_mode_long_true_even_when_sma5_declining():
+    # 押し目局面: 20>5>100の並びで、MA5は下向きでもMA20・MA100が上向きなら成立
+    df = _df_100(
+        sma5=[12, 10],
+        sma20=[15, 16],
+        sma100=[8, 9],
+    )
+
+    assert is_long_trend(df, ma_mode="pullback_100") is True
+
+
+def test_pullback_100_mode_long_false_when_order_broken():
+    df = _df_100(
+        sma5=[17, 18],  # MA20より上に出てしまい20>5>100を崩す
+        sma20=[15, 16],
+        sma100=[8, 9],
+    )
+
+    assert is_long_trend(df, ma_mode="pullback_100") is False
+
+
+def test_pullback_100_mode_long_false_when_sma20_not_up():
+    df = _df_100(
+        sma5=[12, 10],
+        sma20=[15, 14],  # 横ばい/下向き
+        sma100=[8, 9],
+    )
+
+    assert is_long_trend(df, ma_mode="pullback_100") is False
+
+
+def test_pullback_100_mode_short_true_even_when_sma5_rising():
+    df = _df_100(
+        sma5=[10, 12],
+        sma20=[8, 7],
+        sma100=[15, 14],
+    )
+
+    assert is_short_trend(df, ma_mode="pullback_100") is True

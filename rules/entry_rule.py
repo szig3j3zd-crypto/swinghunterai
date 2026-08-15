@@ -58,8 +58,9 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
 
     ma_mode
         "ma_order"選択時の並び順バリエーション。"full"（5>20>60、デフォルト）、
-        "two_line"（5>20のみ）、"full_100"（5>20>100）。"two_line"の場合、
-        60日線フィルタも解除する。"full_100"の場合、60日線フィルタの代わりに
+        "two_line"（5>20のみ）、"full_100"（5>20>100）、"pullback_100"
+        （20>5>100の押し目）。"two_line"の場合、60日線フィルタも解除する。
+        "full_100"・"pullback_100"の場合、60日線フィルタの代わりに
         100日線フィルタを適用する
 
     bounce_merge_within
@@ -123,8 +124,8 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
 
             return _skip("not_in_trend", current_price, direction)
 
-        if ma_mode in ("full", "full_100"):
-            filter_column = "sma100" if ma_mode == "full_100" else "sma60"
+        if ma_mode in ("full", "full_100", "pullback_100"):
+            filter_column = "sma60" if ma_mode == "full" else "sma100"
             filter_today = df[filter_column].iloc[-1]
 
             if direction == "long" and not (current_price > filter_today):
