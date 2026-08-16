@@ -165,6 +165,32 @@ def has_open_trade(code):
     return row is not None
 
 
+def get_open_trade_codes():
+    """
+    保有中（未決済）の売買銘柄コードの集合を取得する
+
+    候補一覧から既に保有中の銘柄を除外するために使う
+    （決済済みのトレードは対象外。再度候補として出てよいため）
+
+    Returns
+    -------
+    codes
+        銘柄コードのset
+    """
+
+    conn = create_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT DISTINCT code FROM trades WHERE exit_price IS NULL")
+
+    codes = {row[0] for row in cursor.fetchall()}
+
+    conn.close()
+
+    return codes
+
+
 def get_all_trades():
     """
     売買銘柄を全件取得する

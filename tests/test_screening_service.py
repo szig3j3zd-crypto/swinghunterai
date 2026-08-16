@@ -2,6 +2,17 @@ import pandas as pd
 
 from config.config import LARGE_CAP_MARKET_CAP_THRESHOLD
 from database.stock_master_reader import get_active_stocks
+from database.trade_repository import (
+    add_trade,
+    create_table as create_trades_table,
+    delete_trade,
+    get_all_trades,
+)
+from database.watchlist_repository import (
+    add_watchlist_stock,
+    create_table as create_watchlist_table,
+    delete_watchlist_stocks_by_code,
+)
 from service.screening_service import (
     evaluate_single_stock,
     format_reason,
@@ -75,6 +86,79 @@ def test_get_today_watchlist_is_always_empty_without_bounce_module():
     watchlist = get_today_watchlist(direction="long", stocks=stocks, modules=["ma_order"])
 
     assert watchlist == []
+
+
+def test_get_today_scan_results_excludes_open_trade_codes():
+    create_trades_table()
+
+    stocks = get_active_stocks().head(5)
+    code = stocks.iloc[0]["code"]
+    company_name = stocks.iloc[0]["company_name"]
+
+    add_trade(
+        code=code, company_name=company_name, direction="long", timeframe="daily",
+        trade_date="2000-01-01", entry_price=100.0, exit_price=None, quantity=100,
+    )
+
+    try:
+        result = get_today_scan_results(
+            direction="long", stocks=stocks, modules=[],
+            min_volume=0, min_price=0, max_price=float("inf"), min_market_cap=0,
+        )
+
+        assert code not in [c["code"] for c in result["candidates"]]
+    finally:
+        for trade in get_all_trades():
+            if trade["code"] == code and trade["trade_date"] == "2000-01-01":
+                delete_trade(trade["id"])
+
+
+def test_get_today_scan_results_does_not_exclude_closed_trade_codes():
+    create_trades_table()
+
+    stocks = get_active_stocks().head(5)
+    code = stocks.iloc[0]["code"]
+    company_name = stocks.iloc[0]["company_name"]
+
+    add_trade(
+        code=code, company_name=company_name, direction="long", timeframe="daily",
+        trade_date="2000-01-01", entry_price=100.0, exit_price=110.0, quantity=100,
+    )
+
+    try:
+        result = get_today_scan_results(
+            direction="long", stocks=stocks, modules=[],
+            min_volume=0, min_price=0, max_price=float("inf"), min_market_cap=0,
+        )
+
+        assert code in [c["code"] for c in result["candidates"]]
+    finally:
+        for trade in get_all_trades():
+            if trade["code"] == code and trade["trade_date"] == "2000-01-01":
+                delete_trade(trade["id"])
+
+
+def test_get_today_scan_results_excludes_watchlist_codes():
+    create_watchlist_table()
+
+    stocks = get_active_stocks().head(5)
+    code = stocks.iloc[0]["code"]
+    company_name = stocks.iloc[0]["company_name"]
+
+    add_watchlist_stock(
+        code=code, company_name=company_name, direction="long", timeframe="daily",
+        added_date="2000-01-01",
+    )
+
+    try:
+        result = get_today_scan_results(
+            direction="long", stocks=stocks, modules=[],
+            min_volume=0, min_price=0, max_price=float("inf"), min_market_cap=0,
+        )
+
+        assert code not in [c["code"] for c in result["candidates"]]
+    finally:
+        delete_watchlist_stocks_by_code(code)
 
 
 def test_get_today_scan_results_with_empty_modules_skips_judgment():

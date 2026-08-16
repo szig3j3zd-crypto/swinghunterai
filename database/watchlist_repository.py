@@ -183,6 +183,31 @@ def delete_watchlist_stocks_by_code(code):
     return deleted_count
 
 
+def get_watchlist_codes():
+    """
+    監視銘柄として登録済みの銘柄コードの集合を取得する
+
+    候補一覧から既に監視中の銘柄を除外するために使う
+
+    Returns
+    -------
+    codes
+        銘柄コードのset
+    """
+
+    conn = create_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT DISTINCT code FROM watchlist")
+
+    codes = {row[0] for row in cursor.fetchall()}
+
+    conn.close()
+
+    return codes
+
+
 def get_all_watchlist_stocks():
     """
     監視銘柄を全件取得する

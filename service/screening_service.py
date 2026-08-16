@@ -4,6 +4,8 @@ from config.config import LARGE_CAP_MARKET_CAP_THRESHOLD
 from data.market_cap_reader import get_market_cap
 from database.stock_master_reader import get_active_stocks
 from database.stock_price_reader import get_stock_data
+from database.trade_repository import get_open_trade_codes
+from database.watchlist_repository import get_watchlist_codes
 from indicators.moving_average import calculate_moving_average
 from indicators.resample import resample_to_monthly, resample_to_weekly
 from indicators.volume import calculate_volume_indicators
@@ -156,7 +158,10 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
     result
         "candidates"（スコア降順の候補リスト）・"watchlist"（監視銘柄候補
         リスト）のキーを持つdict。各要素はcode, company_name と
-        evaluate_entry() の戻り値を含む
+        evaluate_entry() の戻り値を含む。"candidates"は、既に保有中
+        （未決済）の売買銘柄・監視銘柄として登録済みの銘柄コードを除外する
+        （方向は問わない。決済済みのトレードは除外しない）。"watchlist"には
+        この除外を適用しない
     """
 
     if stocks is None:
@@ -223,6 +228,11 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
 
         except Exception:
             continue
+
+    # 既に保有中（未決済）の売買銘柄、または監視銘柄として登録済みの銘柄は
+    # 候補一覧から除外する（決済済みのトレードは対象外。方向は問わない）
+    excluded_codes = get_open_trade_codes() | get_watchlist_codes()
+    candidates = [c for c in candidates if c["code"] not in excluded_codes]
 
     candidates = _filter_by_market_cap(
         candidates, ticker_by_code, min_market_cap, max_market_cap
