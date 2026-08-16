@@ -278,10 +278,20 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
         )
 
     if show_volume:
+        # x軸にはデータが存在しない日（土日・祝日、週足/月足なら期間内の
+        # ほとんどの日）を圧縮するrangebreaksを適用している（下のfig.update_xaxes
+        # 参照）ため、隣り合う実データ点同士の実質的な間隔は日足/週足/月足を
+        # 問わずどれも「（圧縮されずに残る）1日分」相当になる。棒の幅を
+        # 明示しないとPlotlyが表示期間全体分のx値から自動で幅を決めようと
+        # して、この圧縮を考慮せず暦日ベースで計算してしまい、週足・月足で
+        # 隣の棒とくっついて見えてしまう。1日分を基準に幅を明示することで
+        # 日足・週足・月足で見た目の隙間の比率を揃える
+        one_day_ms = 24 * 60 * 60 * 1000
         fig.add_trace(
             go.Bar(
                 x=df["date"],
                 y=df["volume"],
+                width=one_day_ms * 0.6,
                 marker_color=VOLUME_COLOR,
                 name="出来高",
                 showlegend=False,
@@ -390,7 +400,8 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
 
 
 def build_scroll_sync_script(bar_dates, highs, lows, volumes,
-                              visible_bar_count, initial_start_index):
+                              visible_bar_count, initial_start_index, storage_key,
+                              view_signature):
 
     """
     チャートの下に表示する、一般的なスクロールバー（トラック＋つまみの
@@ -400,7 +411,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
     フィットを行うJavaScriptを組み立てる
 
     st.components.v1.html(...)でst.plotly_chartの直後に埋め込む想定。
-    このscriptが行うのは次の3点
+    このscriptが行うのは次の4点
 
     - チャート下にスクロールバー（トラック＋つまみ）を描画する。つまみの
       位置・幅は現在の表示範囲（Plotlyのxaxis.range）が表示期間全体の
@@ -411,6 +422,14 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
       （Plotly標準のdragmode="pan"）・矢印キーのいずれが原因でも）、
       その範囲内の高値・安値・出来高から価格軸・出来高軸のレンジを自動で
       再フィットし、あわせてスクロールバーのつまみの位置・幅も更新する
+    - 表示範囲が変わるたびにsessionStorageへ現在の表示範囲（カレンダー日付）
+      を保存し、次にこのチャート（storage_key単位）が再描画されたとき
+      （MAチェックボックスの切替、日足/週足/月足の変更など、Streamlitの
+      再実行を伴う操作すべて）に自動で復元する。Python側は表示期間・
+      表示幅から計算した「最新側」の範囲を常に初期値として渡すため、
+      これが無いと操作のたびに表示位置が最新側へ戻ってしまう
+      （Streamlit側の制限。詳細はdashboard.pyのst.plotly_chart呼び出し
+      付近のコメント参照）
 
     いずれの操作もStreamlitの再実行を伴わず、ブラウザ側でPlotly.relayoutを
     直接呼ぶことで完結する
@@ -433,6 +452,20 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         現在（Streamlitが最後に描画した時点）の表示窓の左端が、
         bar_dates の何番目か。矢印キーはここを起点に動かす
 
+    storage_key
+        表示位置の記憶に使うsessionStorageのキー。銘柄・タブ単位で
+        一意にする（例: f"{key_prefix}:{code}"）。日足/週足/月足を
+        変えても引き継ぎたいため、意図的に時間足は含めない
+        （銘柄・タブが変われば別の記憶として扱う）
+
+    view_signature
+        表示期間・表示幅の現在値を表す文字列（例: f"{period_label}:
+        {display_width_label}"）。保存済みの表示位置は、これが前回
+        保存時と一致する場合のみ復元する。表示期間・表示幅を
+        ユーザーが明示的に変更した場合は、その変更を優先し復元は
+        スキップする（スキップしないと、変更してもPython側の新しい
+        既定表示ではなく古い保存位置が復元され続けてしまう）
+
     Returns
     -------
     html
@@ -443,6 +476,8 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
     highs_json = json.dumps([float(v) for v in highs])
     lows_json = json.dumps([float(v) for v in lows])
     volumes_json = json.dumps([float(v) for v in volumes])
+    storage_key_json = json.dumps(f"swingHunterChartWindow:{storage_key}")
+    view_signature_json = json.dumps(view_signature)
 
     return f"""
     <style>
@@ -477,6 +512,104 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
     (function() {{
         const track = document.getElementById("sh-scrollbar-track");
         const thumb = document.getElementById("sh-scrollbar-thumb");
+        const storageKey = {storage_key_json};
+        const viewSignature = {view_signature_json};
+
+        // 現在の表示範囲（カレンダー日付）をsessionStorageへ保存する。
+        // 保存先はwindow.parent（メインページ）側にする。このiframe自身は
+        // Streamlitの再描画のたびに作り直されるため、iframe自身の
+        // sessionStorageに保存すると次の再描画までに失われることがある
+        function saveWindow(range) {{
+            try {{
+                window.parent.sessionStorage.setItem(
+                    storageKey,
+                    JSON.stringify({{
+                        start: range[0], end: range[1], viewSignature: viewSignature,
+                    }})
+                );
+            }} catch (err) {{
+                // プライベートブラウジング等でsessionStorageが使えなくても
+                // チャート自体は通常どおり表示できるよう、握りつぶす
+            }}
+        }}
+
+        // 前回保存されている表示範囲があれば復元する。MAチェックボックスの
+        // 切替・日足/週足/月足の変更など、Streamlitの再実行を伴う操作の
+        // たびにPythonは「表示期間・表示幅から計算した最新側」の範囲を
+        // 初期値として渡してくるため、これが無いと操作のたびに表示位置が
+        // 最新側へ戻ってしまう
+        function restoreWindow(gd, scrollState) {{
+            // 前回のrestoreWindow()呼び出しで仕掛けた再適用タイマーが
+            // まだ残っていればキャンセルする（古い（別のgd・別の範囲を
+            // 対象とした）再適用が、この後の新しい復元と競合して表示が
+            // 安定しなくなるのを防ぐ）
+            pendingRestoreTimers.forEach(function(timerId) {{ clearTimeout(timerId); }});
+            pendingRestoreTimers = [];
+
+            let saved;
+            try {{
+                const raw = window.parent.sessionStorage.getItem(storageKey);
+                if (!raw) return;
+                saved = JSON.parse(raw);
+            }} catch (err) {{
+                return;
+            }}
+            if (!saved || !saved.start || !saved.end) return;
+            // 表示期間・表示幅をユーザーが明示的に変更した場合は、その
+            // 変更を優先する（保存済みの位置を復元しない）。復元しないと
+            // 次に実際に表示範囲が変わった時点（ドラッグ等）でsaveWindow()
+            // が新しいviewSignatureで上書き保存する
+            if (saved.viewSignature !== viewSignature) return;
+
+            const minMs = scrollState.barTimestamps[0];
+            const maxMs = scrollState.barTimestamps[scrollState.barTimestamps.length - 1];
+            let startMs = new Date(saved.start).getTime();
+            let endMs = new Date(saved.end).getTime();
+            if (!(startMs < endMs)) return;
+
+            // 表示期間の変更・日足/週足/月足の切替で、保存済みの範囲が
+            // 現在のデータ範囲からはみ出すことがあるためクランプする
+            const width = endMs - startMs;
+            if (startMs < minMs) {{
+                startMs = minMs;
+                endMs = startMs + width;
+            }}
+            if (endMs > maxMs) {{
+                endMs = maxMs;
+                startMs = endMs - width;
+            }}
+            startMs = Math.max(startMs, minMs);
+            endMs = Math.min(endMs, maxMs);
+            if (!(startMs < endMs)) return;
+
+            const targetRange = [
+                new Date(startMs).toISOString(),
+                new Date(endMs).toISOString(),
+            ];
+
+            function applyTargetRange() {{
+                const nowRange = gd._fullLayout && gd._fullLayout.xaxis
+                    ? gd._fullLayout.xaxis.range : null;
+                const alreadyThere = nowRange
+                    && Math.abs(new Date(nowRange[0]).getTime() - startMs) < 1000
+                    && Math.abs(new Date(nowRange[1]).getTime() - endMs) < 1000;
+                if (alreadyThere) return;
+                window.parent.Plotly.relayout(gd, {{"xaxis.range": targetRange}});
+            }}
+
+            applyTargetRange();
+            // st.plotly_chart側は、このscrollStateとは別のStreamlitコンポーネント
+            // として少し遅れて（または2段階に分けて）Python側の既定レンジで
+            // 再描画されることがあり、その場合ここでの復元が後から上書きされて
+            // しまう。同じgdに対して少し時間を置いて複数回再適用することで
+            // 上書きに対抗する（既に正しい範囲ならrelayoutを呼ばないため、
+            // 定常状態になった後は無駄なPlotly呼び出しは発生しない）。
+            // タイマーIDをpendingRestoreTimersに残し、次のrestoreWindow()
+            // 呼び出し時にキャンセルできるようにする
+            [200, 500, 900, 1500, 2500, 4000].forEach(function(delay) {{
+                pendingRestoreTimers.push(setTimeout(applyTargetRange, delay));
+            }});
+        }}
 
         // このscriptを埋め込んだiframe（window.frameElement）の直前にある
         // Plotlyチャートdivを探す。IDを直接指定できない（Streamlitが
@@ -540,10 +673,9 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
 
         // スクロールバーのつまみの位置・幅を、現在のxaxis.rangeが表示期間
         // 全体（barTimestampsの最小〜最大）のどこに当たるかから計算する
-        function updateThumb(gd) {{
-            const scrollState = gd.__swingHunterScroll;
+        function updateThumb(gd, scrollState) {{
             if (!scrollState) return;
-            const range = gd._fullLayout && gd._fullLayout.xaxis
+            const range = gd && gd._fullLayout && gd._fullLayout.xaxis
                 ? gd._fullLayout.xaxis.range : null;
             if (!range) return;
 
@@ -561,43 +693,45 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             thumb.style.width = widthPct + "%";
         }}
 
-        function setup(gd) {{
-            // スキャン/売買銘柄/監視銘柄タブが同時にチャートを表示している
-            // ケースがあるため、本数・現在位置などの状態はグローバルではなく
-            // 各チャートのdivに直接持たせ、チャート同士が干渉しないようにする
-            const barDates = {dates_json};
-            gd.__swingHunterScroll = {{
-                barDates: barDates,
-                barTimestamps: barDates.map(function(d) {{ return new Date(d).getTime(); }}),
-                highs: {highs_json},
-                lows: {lows_json},
-                volumes: {volumes_json},
-                visibleBarCount: {int(visible_bar_count)},
-                startIndex: {int(initial_start_index)},
-                maxStartIndex: Math.max(barDates.length - {int(visible_bar_count)}, 0),
-            }};
-            updateThumb(gd);
+        // 現在把握している「生きている」チャートdiv・その付随状態。
+        // setup()を呼ぶたびに更新する。gd自体をこれらの状態の保管場所に
+        // しない（後述）ため、クロージャ内のこの2変数が単一の真実の情報源になる
+        let currentGd = null;
+        let currentScrollState = null;
+        // restoreWindow()が仕掛ける再適用タイマー（下記参照）。新しい
+        // restoreWindow()呼び出しのたびに、前回分がまだ残っていればキャンセル
+        // する（キャンセルしないと、日足/週足/月足の切替やMAチェックボックスの
+        // 連続操作で新旧の復元先が競合し、表示が安定しない）
+        let pendingRestoreTimers = [];
 
-            // マウスが乗っているチャートを「矢印キーの対象」として覚えておく
-            function markActive() {{
-                window.parent.__swingHunterActiveChart = gd;
+        // currentGdがまだDOM上に存在するか確認し、破棄されていれば
+        // 現在のチャートdivを探し直してsetup()をやり直す（currentGd・
+        // currentScrollStateの更新、plotly_relayoutリスナーの張り替えを含む）。
+        // スクロールバーのつまみ・トラックをクリックした瞬間に毎回呼ぶことで、
+        // その間にStreamlitの再描画でチャートdivが差し替わっていても
+        // 自己修復する
+        function ensureLiveGd() {{
+            if (currentGd && window.parent.document.contains(currentGd)) {{
+                return currentGd;
             }}
-            gd.addEventListener("mouseenter", markActive);
-            if (gd.matches(":hover")) {{
-                markActive();
+            const found = findPlotDiv();
+            if (found) {{
+                setup(found);
             }}
+            return currentGd;
+        }}
 
+        function attachRelayoutListener(gd, scrollState) {{
             // マウスドラッグ（Plotly標準のdragmode="pan"）・スクロールバー・
             // 矢印キーのいずれでx軸レンジが変わった場合も、Plotlyが発火する
             // plotly_relayoutイベントを起点に価格軸・出来高軸を再フィット
             // し、スクロールバーのつまみも合わせて更新する。このハンドラは
-            // 今回のthumb/trackを直接参照するクロージャなので、矢印キーの
-            // リスナーと同様に再描画のたびに張り替える（古いハンドラをその
-            // まま使い回すと、前回のiframeが消えたときに一緒に破棄された
-            // 古いthumb/trackを更新しようとして無反応になるため）。同じ
-            // 関数から呼ぶ自分自身のy軸更新（Plotly.relayout）が再度
-            // plotly_relayoutを発火させても、そちらはxaxis側のキーを
-            // 含まないため無限ループにはならない
+            // 今回のgd・scrollStateを直接参照するクロージャなので、再描画の
+            // たびに張り替える（古いハンドラをそのまま使い回すと、前回の
+            // gdが破棄された後は無反応になるため）。同じ関数から呼ぶ
+            // 自分自身のy軸更新（Plotly.relayout）が再度plotly_relayoutを
+            // 発火させても、そちらはxaxis側のキーを含まないため無限ループには
+            // ならない
             if (gd.__swingHunterRelayoutHandler
                     && typeof gd.removeListener === "function") {{
                 gd.removeListener("plotly_relayout", gd.__swingHunterRelayoutHandler);
@@ -608,11 +742,11 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 }});
                 if (!xChanged) return;
 
-                const scrollState = gd.__swingHunterScroll;
-                if (!scrollState) return;
                 const curRange = gd._fullLayout && gd._fullLayout.xaxis
                     ? gd._fullLayout.xaxis.range : null;
                 if (!curRange) return;
+
+                saveWindow(curRange);
 
                 const startMs = new Date(curRange[0]).getTime();
                 let startIndex = lowerBound(scrollState.barTimestamps, startMs);
@@ -624,10 +758,49 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     "yaxis.range": ranges.yRange,
                     "yaxis2.range": ranges.volRange,
                 }});
-                updateThumb(gd);
+                updateThumb(gd, scrollState);
             }};
             gd.__swingHunterRelayoutHandler = relayoutHandler;
             gd.on("plotly_relayout", relayoutHandler);
+        }}
+
+        function setup(gd) {{
+            // scrollStateはこの関数の外（currentScrollState）に持たせ、gd
+            // （Plotlyのチャートdiv）には保存しない。gdはStreamlitの再描画の
+            // たびに破棄・差し替えされることがあり（Plotly.purge()されると
+            // gdの_fullLayout等の内部状態も失われる）、gdに直接ぶら下げると
+            // 後から参照したときに既に無効なdivを見てしまうため
+            const barDates = {dates_json};
+            currentGd = gd;
+            currentScrollState = {{
+                barDates: barDates,
+                barTimestamps: barDates.map(function(d) {{ return new Date(d).getTime(); }}),
+                highs: {highs_json},
+                lows: {lows_json},
+                volumes: {volumes_json},
+                visibleBarCount: {int(visible_bar_count)},
+                startIndex: {int(initial_start_index)},
+                maxStartIndex: Math.max(barDates.length - {int(visible_bar_count)}, 0),
+            }};
+            updateThumb(gd, currentScrollState);
+
+            // マウスが乗っているチャートを「矢印キーの対象」として覚えておく
+            function markActive() {{
+                window.parent.__swingHunterActiveChart = gd;
+                window.parent.__swingHunterActiveScrollState = currentScrollState;
+            }}
+            gd.addEventListener("mouseenter", markActive);
+            if (gd.matches(":hover")) {{
+                markActive();
+            }}
+
+            attachRelayoutListener(gd, currentScrollState);
+
+            // 保存済みの表示範囲があれば、Python側が渡した「最新側」の
+            // 初期範囲を上書きして復元する（上のattachRelayoutListener
+            // の後で呼ぶことで、復元時のrelayoutもY軸再フィット・
+            // つまみ更新・再保存の対象になる）
+            restoreWindow(gd, currentScrollState);
 
             // 矢印キーのリスナーは常にこのチャート（この再描画）の分だけを
             // 残す。「一度だけ登録して使い回す」実装だと、以前のリスナーは
@@ -653,10 +826,10 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
 
                 const target = window.parent.__swingHunterActiveChart;
-                if (!target || !target.__swingHunterScroll || !window.parent.Plotly) {{
+                const scrollState = window.parent.__swingHunterActiveScrollState;
+                if (!target || !scrollState || !window.parent.Plotly) {{
                     return;
                 }}
-                const scrollState = target.__swingHunterScroll;
 
                 let nextIndex;
                 if (e.key === "ArrowLeft") {{
@@ -697,25 +870,35 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             let dragState = null;
 
             thumb.addEventListener("mousedown", function(e) {{
-                const scrollState = gd.__swingHunterScroll;
-                const range = gd._fullLayout && gd._fullLayout.xaxis
-                    ? gd._fullLayout.xaxis.range : null;
-                if (!scrollState || !range) return;
+                // ドラッグ開始時点でensureLiveGd()を呼び、チャートdivが
+                // Streamlitの再描画で破棄・差し替えされていないか確認する
+                // （破棄されていた場合は自動的にsetup()をやり直し、
+                // currentGd/currentScrollStateとplotly_relayoutリスナーを
+                // 新しいdivへ張り替える）。これをしないと、setup()実行時に
+                // 見つけたdivがその後無効になった場合にドラッグが反応しなく
+                // なる
+                const liveGd = ensureLiveGd();
+                const range = liveGd && liveGd._fullLayout && liveGd._fullLayout.xaxis
+                    ? liveGd._fullLayout.xaxis.range : null;
+                if (!currentScrollState || !range) return;
                 dragState = {{
+                    gd: liveGd,
                     startClientX: e.clientX,
                     startRangeMs: [
                         new Date(range[0]).getTime(),
                         new Date(range[1]).getTime(),
                     ],
                     trackWidthPx: track.getBoundingClientRect().width,
-                    minMs: scrollState.barTimestamps[0],
-                    maxMs: scrollState.barTimestamps[scrollState.barTimestamps.length - 1],
+                    minMs: currentScrollState.barTimestamps[0],
+                    maxMs: currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1],
                 }};
                 e.preventDefault();
             }});
 
             document.addEventListener("mousemove", function(e) {{
-                if (!dragState || !window.parent.Plotly) return;
+                if (!dragState || !window.parent.Plotly) {{
+                    return;
+                }}
                 const deltaPx = e.clientX - dragState.startClientX;
                 const deltaMs = (deltaPx / dragState.trackWidthPx)
                     * (dragState.maxMs - dragState.minMs);
@@ -730,7 +913,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     newEnd = dragState.maxMs;
                     newStart = newEnd - width;
                 }}
-                window.parent.Plotly.relayout(gd, {{
+                window.parent.Plotly.relayout(dragState.gd, {{
                     "xaxis.range": [
                         new Date(newStart).toISOString(),
                         new Date(newEnd).toISOString(),
@@ -753,14 +936,15 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             // そのクリック位置を中心に表示幅を保ったままジャンプする
             track.addEventListener("mousedown", function(e) {{
                 if (e.target === thumb || !window.parent.Plotly) return;
-                const scrollState = gd.__swingHunterScroll;
-                const range = gd._fullLayout && gd._fullLayout.xaxis
-                    ? gd._fullLayout.xaxis.range : null;
-                if (!scrollState || !range) return;
+                // つまみのmousedownと同様、クリック時点でensureLiveGd()を呼ぶ
+                const liveGd = ensureLiveGd();
+                const range = liveGd && liveGd._fullLayout && liveGd._fullLayout.xaxis
+                    ? liveGd._fullLayout.xaxis.range : null;
+                if (!currentScrollState || !range) return;
 
                 const rect = track.getBoundingClientRect();
-                const minMs = scrollState.barTimestamps[0];
-                const maxMs = scrollState.barTimestamps[scrollState.barTimestamps.length - 1];
+                const minMs = currentScrollState.barTimestamps[0];
+                const maxMs = currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1];
                 const clickMs = minMs + ((e.clientX - rect.left) / rect.width) * (maxMs - minMs);
                 const width = new Date(range[1]).getTime() - new Date(range[0]).getTime();
                 let newStart = clickMs - width / 2;
@@ -773,7 +957,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     newEnd = maxMs;
                     newStart = newEnd - width;
                 }}
-                window.parent.Plotly.relayout(gd, {{
+                window.parent.Plotly.relayout(liveGd, {{
                     "xaxis.range": [
                         new Date(newStart).toISOString(),
                         new Date(newEnd).toISOString(),
@@ -787,18 +971,19 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
 
         // st.plotly_chart側の描画は非同期のため、このscriptが先に動いて
         // チャートdivがまだ存在しないことがある。見つかるまで短い間隔で
-        // 探し直す（最大5秒。それでも見つからなければ諦める）
-        let attempts = 0;
-        const timer = setInterval(function() {{
-            attempts += 1;
+        // 探し直す。さらに、st.plotly_chartはチェックボックス操作等の
+        // 再描画のたびにチャートdivを裏で作り直すことがあり（このscroll-sync
+        // 用iframe自体はbar_dates等の内容が変わらない限り再読み込みされない
+        // ため、その再描画に気づけない）、そのままだと表示位置の復元
+        // （restoreWindow）が古いdivにしか適用されず反映されない。そのため
+        // 「見つけたら終わり」にせず、iframeが存在する間ずっと定期的に
+        // 探し直し、currentGdと異なるdivが見つかるたびにsetup()をやり直す
+        setInterval(function() {{
             const gd = findPlotDiv();
-            if (gd) {{
-                clearInterval(timer);
+            if (gd && gd !== currentGd) {{
                 setup(gd);
-            }} else if (attempts > 50) {{
-                clearInterval(timer);
             }}
-        }}, 100);
+        }}, 200);
     }})();
     </script>
     """

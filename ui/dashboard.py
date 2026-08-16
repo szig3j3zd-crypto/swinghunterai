@@ -108,13 +108,13 @@ CHART_DISPLAY_WIDTH_OPTIONS = (
     [f"{n}ヶ月" for n in range(3, 12)] + [f"{n}年" for n in range(1, 6)]
 )
 
-# 時間足ごとのデフォルト表示期間・表示幅（日足は直近半年、週足は直近3年が
-# 読み取りやすいため。表示幅も同じ値をデフォルトにすることで、初期表示は
-# 従来どおり期間全体がそのまま見える見た目になる）。月足のみ、表示期間を
-# データが存在しうる最大（10年）にして過去分までスクロールできるように
-# しつつ、初期表示の表示幅は見やすい5年（60本）にとどめる
-CHART_PERIOD_DEFAULT = {"daily": "6ヶ月", "weekly": "3年", "monthly": "10年"}
-CHART_DISPLAY_WIDTH_DEFAULT = {"daily": "6ヶ月", "weekly": "3年", "monthly": "5年"}
+# 表示期間・表示幅は日足/週足/月足で切り替えても変えない（値も選択状態も
+# 共通）。時間足ごとに個別のデフォルト・選択状態を持たせていた頃は、
+# 切り替えるたびにスクロールできる範囲や初期ズーム幅が変わってしまい、
+# 表示位置の復元基準もそのたびにズレて表示が安定しなかったため、
+# どちらも時間足に依存しない単一のデフォルト値にした
+CHART_PERIOD_DEFAULT = "5年"
+CHART_DISPLAY_WIDTH_DEFAULT = "6ヶ月"
 
 # 日単位で見たい短い表示幅では「月/日」、それより長い表示幅では「年/月」で
 # 出来高チャート下の日付軸ラベルを表示する
@@ -348,6 +348,12 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     銘柄選択時のチャート表示から共通で呼び出す。key_prefixは、複数の
     タブで同時に呼ばれてもウィジェットのkeyが衝突しないようにするための
     区別用（"scan" | "trades" | "watchlist"）
+
+    chart_timeframe
+        表示する時間足。サイドバーの「時間足」ラジオボタン（1つだけ）に
+        一本化しており、スキャン・売買銘柄・監視銘柄のどのタブのチャートも
+        常にこの値を使う（売買銘柄/監視銘柄タブの表内「時間足」列は
+        登録データそのものの日足/週足修正用で、これとは別物）
     """
 
     st.markdown("##### 株価チャート")
@@ -364,30 +370,31 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     )
     # 表示期間・表示幅は、ウィジェット自身のkeyだけでなく独立した
     # session_stateで現在値を管理し、このブロックが描画されないrunを
-    # 挟んでも維持する
-    period_pref_key = f"chart_period_pref_{key_prefix}_{chart_timeframe}"
+    # 挟んでも維持する。表示期間はkey・session_stateとも時間足を含めない
+    # （日足/週足/月足を切り替えても値を変えないため）
+    period_pref_key = f"chart_period_pref_{key_prefix}"
     with period_col:
         period_label = st.selectbox(
             "表示期間",
             options=CHART_PERIOD_OPTIONS,
             index=CHART_PERIOD_OPTIONS.index(
-                st.session_state.get(period_pref_key, CHART_PERIOD_DEFAULT[chart_timeframe])
+                st.session_state.get(period_pref_key, CHART_PERIOD_DEFAULT)
             ),
-            key=f"chart_period_select_{key_prefix}_{chart_timeframe}",
+            key=f"chart_period_select_{key_prefix}",
         )
     st.session_state[period_pref_key] = period_label
 
-    width_pref_key = f"chart_display_width_pref_{key_prefix}_{chart_timeframe}"
+    # 表示期間と同様、key・session_stateとも時間足を含めない
+    # （日足/週足/月足を切り替えても値を変えないため）
+    width_pref_key = f"chart_display_width_pref_{key_prefix}"
     with width_col:
         display_width_label = st.selectbox(
             "チャート表示幅",
             options=CHART_DISPLAY_WIDTH_OPTIONS,
             index=CHART_DISPLAY_WIDTH_OPTIONS.index(
-                st.session_state.get(
-                    width_pref_key, CHART_DISPLAY_WIDTH_DEFAULT[chart_timeframe]
-                )
+                st.session_state.get(width_pref_key, CHART_DISPLAY_WIDTH_DEFAULT)
             ),
-            key=f"chart_display_width_select_{key_prefix}_{chart_timeframe}",
+            key=f"chart_display_width_select_{key_prefix}",
         )
     st.session_state[width_pref_key] = display_width_label
 
@@ -527,6 +534,13 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             chart_df_in_period["volume"],
             visible_bar_count,
             start_offset,
+            storage_key=f"{key_prefix}:{code}",
+            # 表示位置の復元は「表示期間・表示幅を自分では変えていない
+            # 再描画」（MAチェックボックス切替・日足/週足/月足の変更など）
+            # だけに適用したい。view_signatureが前回保存時と違えば、
+            # ユーザーが表示期間/表示幅を明示的に変更したとみなし、
+            # 復元をスキップしてPython側の新しい既定表示をそのまま使う
+            view_signature=f"{period_label}:{display_width_label}",
         ),
         # トラック自体は細い（14px）が、ドラッグ中に多少上下にぶれても
         # このiframe自身の高さの範囲内であればmousemoveを取りこぼさない
@@ -796,7 +810,9 @@ with tab_scan:
                 label=f"{focus_candidate['code']} {focus_candidate['company_name']}",
                 result=focus_candidate,
                 code=focus_candidate["code"],
-                chart_timeframe=st.session_state.get("timeframe", timeframe),
+                # チャート表示の時間足はサイドバーの「時間足」に一本化する
+                # （スキャン実行時点の時間足に固定していた従来の挙動をやめる）
+                chart_timeframe=timeframe,
             )
             st.divider()
 
@@ -1029,9 +1045,9 @@ def _render_trades_section():
     with focus_slot:
         if focus_trade is not None:
             st.markdown(f"##### {focus_trade['code']} {focus_trade['company_name']}")
-            _render_chart_block(
-                focus_trade["code"], focus_trade["timeframe"], key_prefix="trades"
-            )
+            # チャート表示の時間足はサイドバーの「時間足」に一本化する
+            # （表内の「時間足」列は登録データそのものの修正用で別物）
+            _render_chart_block(focus_trade["code"], timeframe, key_prefix="trades")
             st.divider()
         else:
             st.info(
@@ -1172,9 +1188,9 @@ def _render_watchlist_section():
     with focus_slot:
         if focus_stock is not None:
             st.markdown(f"##### {focus_stock['code']} {focus_stock['company_name']}")
-            _render_chart_block(
-                focus_stock["code"], focus_stock["timeframe"], key_prefix="watchlist"
-            )
+            # チャート表示の時間足はサイドバーの「時間足」に一本化する
+            # （表内の「時間足」列は登録データそのものの修正用で別物）
+            _render_chart_block(focus_stock["code"], timeframe, key_prefix="watchlist")
             st.divider()
         else:
             st.info(
