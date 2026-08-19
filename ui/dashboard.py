@@ -851,7 +851,7 @@ with tab_scan:
                     "株数", min_value=1, value=100, step=100
                 )
                 exit_price_input = st.number_input(
-                    "決済株価（利確/損切。未決済なら0のまま）",
+                    "決算株価（利確/損切。未決済なら0のまま）",
                     min_value=0.0,
                     value=0.0,
                 )
@@ -922,13 +922,112 @@ with tab_scan:
         )
 
 
+def _render_trade_table(trades_subset, key_suffix):
+
+    """
+    トレード一覧を1つのdata_editorで描画する（保有中セクション・決算済み
+    セクションの年月ごとの表、両方から呼ぶ共通処理）
+
+    「表示」チェックボックスによるチャート選択、行内編集（決算株価を
+    含む）の保存とその後のst.rerun()をここで行う。決算株価を空欄から
+    値ありへ（またはその逆へ）編集すると、次の再実行時にexit_priceの
+    有無で保有中/決算済みのどちらに振り分けるかが変わり、結果的に
+    そちらのセクションへ表示が移動する
+    """
+
+    current_focus_id = st.session_state.get("trades_chart_focus_id")
+
+    display_df = pd.DataFrame(
+        [
+            {
+                "表示": trade["id"] == current_focus_id,
+                "コード": trade["code"],
+                "銘柄名": trade["company_name"],
+                "方向": DIRECTION_LABELS[trade["direction"]],
+                "時間足": TIMEFRAME_LABELS[trade["timeframe"]],
+                "取引日": trade["trade_date"],
+                "購入株価": trade["entry_price"],
+                "決算株価": trade["exit_price"],
+                "株数": trade["quantity"],
+                "損益": calculate_pnl(trade),
+            }
+            for trade in trades_subset
+        ],
+        index=[trade["id"] for trade in trades_subset],
+    )
+
+    edited_df = st.data_editor(
+        display_df,
+        # keyにcurrent_focus_idを含める: 選択が変わるたびにウィジェットを
+        # 新規生成させ、st.data_editorが「表示」列の過去の編集状態を
+        # 引きずって選択が正しく切り替わらない（チェックが更新されず
+        # 再実行が終わらない）事象を避ける
+        key=f"trade_editor_{key_suffix}_{current_focus_id}",
+        use_container_width=True,
+        disabled=["コード", "銘柄名", "方向", "取引日", "損益"],
+        column_config={
+            "表示": st.column_config.CheckboxColumn(
+                help="チェックした銘柄のチャートを上に表示します"
+            ),
+            "決算株価": st.column_config.NumberColumn(
+                help="値を入れると決算済みとして扱われ、決算済みセクションへ移動します"
+            ),
+            "時間足": st.column_config.SelectboxColumn(
+                options=list(TIMEFRAME_LABELS.values()),
+                help="日足/週足を間違えて登録した場合はここで修正できます",
+            ),
+        },
+    )
+
+    trade_ids = [trade["id"] for trade in trades_subset]
+    newly_checked_ids = [
+        trade_id for trade_id in trade_ids
+        if bool(edited_df.loc[trade_id, "表示"]) and trade_id != current_focus_id
+    ]
+
+    if newly_checked_ids:
+        st.session_state["trades_chart_focus_id"] = newly_checked_ids[0]
+        st.rerun()
+    elif (
+        current_focus_id in trade_ids
+        and not bool(edited_df.loc[current_focus_id, "表示"])
+    ):
+        st.session_state["trades_chart_focus_id"] = None
+        st.rerun()
+
+    for trade in trades_subset:
+        row = edited_df.loc[trade["id"]]
+        new_exit_price = (
+            None if pd.isna(row["決算株価"]) else float(row["決算株価"])
+        )
+        new_timeframe = TIMEFRAME_LABELS_INVERSE[row["時間足"]]
+
+        if (
+            row["購入株価"] != trade["entry_price"]
+            or new_exit_price != trade["exit_price"]
+            or row["株数"] != trade["quantity"]
+            or new_timeframe != trade["timeframe"]
+        ):
+            update_trade(
+                trade["id"],
+                entry_price=float(row["購入株価"]),
+                exit_price=new_exit_price,
+                quantity=int(row["株数"]),
+                timeframe=new_timeframe,
+            )
+            st.rerun()
+
+
 def _render_trades_section():
 
     """
     売買銘柄タブを描画する
 
-    日足・週足は分けず1つの表にまとめ、「時間足」列で見分ける。
-    合計損益・削除・監視銘柄への移動も日足/週足を問わず一括で扱う。
+    保有中（決算株価が未入力）・決算済み（決算株価入力済み）を別セクション
+    に分ける。決算済みセクションはこれまで通り年→月でグルーピングし、
+    月間・年間損益を表示する（未決済トレードは損益集計に含まれないため、
+    保有中セクションには損益の合計表示は無い）。日足・週足は分けず
+    1つの表にまとめ、「時間足」列で見分ける
 
     銘柄の選択は表内の「表示」チェックボックス列で行う（スキャンタブの
     候補一覧の行選択と同じ考え方）。チャートは表より上（focus_slot）に
@@ -947,97 +1046,29 @@ def _render_trades_section():
 
     focus_slot = st.container()
 
-    groups = group_by_year_and_month(trades)
+    open_trades = [trade for trade in trades if trade["exit_price"] is None]
+    closed_trades = [trade for trade in trades if trade["exit_price"] is not None]
 
-    for year_index, (year, year_pnl, month_groups) in enumerate(groups):
-        with st.expander(
-            f"{year}年（年間損益: {year_pnl:+,.0f}円）",
-            expanded=(year_index == 0),
-        ):
-            for month, month_pnl, month_trades in month_groups:
-                st.markdown(f"**{month}月　月間損益: {month_pnl:+,.0f}円**")
+    st.markdown("#### 保有中")
+    if open_trades:
+        _render_trade_table(open_trades, key_suffix="open")
+    else:
+        st.caption("現在保有中の銘柄はありません。")
 
-                current_focus_id = st.session_state.get("trades_chart_focus_id")
+    st.markdown("#### 決算済み")
+    if closed_trades:
+        groups = group_by_year_and_month(closed_trades)
 
-                display_df = pd.DataFrame(
-                    [
-                        {
-                            "表示": trade["id"] == current_focus_id,
-                            "コード": trade["code"],
-                            "銘柄名": trade["company_name"],
-                            "方向": DIRECTION_LABELS[trade["direction"]],
-                            "時間足": TIMEFRAME_LABELS[trade["timeframe"]],
-                            "取引日": trade["trade_date"],
-                            "購入株価": trade["entry_price"],
-                            "決済株価": trade["exit_price"],
-                            "株数": trade["quantity"],
-                            "損益": calculate_pnl(trade),
-                        }
-                        for trade in month_trades
-                    ],
-                    index=[trade["id"] for trade in month_trades],
-                )
-
-                edited_df = st.data_editor(
-                    display_df,
-                    # keyにcurrent_focus_idを含める: 選択が変わるたびに
-                    # ウィジェットを新規生成させ、st.data_editorが「表示」列の
-                    # 過去の編集状態を引きずって選択が正しく切り替わらない
-                    # （チェックが更新されず再実行が終わらない）事象を避ける
-                    key=f"trade_editor_{year}_{month}_{current_focus_id}",
-                    use_container_width=True,
-                    disabled=["コード", "銘柄名", "方向", "取引日", "損益"],
-                    column_config={
-                        "表示": st.column_config.CheckboxColumn(
-                            help="チェックした銘柄のチャートを上に表示します"
-                        ),
-                        "決済株価": st.column_config.NumberColumn(
-                            help="空欄のままなら未決済として扱われます"
-                        ),
-                        "時間足": st.column_config.SelectboxColumn(
-                            options=list(TIMEFRAME_LABELS.values()),
-                            help="日足/週足を間違えて登録した場合はここで修正できます",
-                        ),
-                    },
-                )
-
-                month_trade_ids = [trade["id"] for trade in month_trades]
-                newly_checked_ids = [
-                    trade_id for trade_id in month_trade_ids
-                    if bool(edited_df.loc[trade_id, "表示"]) and trade_id != current_focus_id
-                ]
-
-                if newly_checked_ids:
-                    st.session_state["trades_chart_focus_id"] = newly_checked_ids[0]
-                    st.rerun()
-                elif (
-                    current_focus_id in month_trade_ids
-                    and not bool(edited_df.loc[current_focus_id, "表示"])
-                ):
-                    st.session_state["trades_chart_focus_id"] = None
-                    st.rerun()
-
-                for trade in month_trades:
-                    row = edited_df.loc[trade["id"]]
-                    new_exit_price = (
-                        None if pd.isna(row["決済株価"]) else float(row["決済株価"])
-                    )
-                    new_timeframe = TIMEFRAME_LABELS_INVERSE[row["時間足"]]
-
-                    if (
-                        row["購入株価"] != trade["entry_price"]
-                        or new_exit_price != trade["exit_price"]
-                        or row["株数"] != trade["quantity"]
-                        or new_timeframe != trade["timeframe"]
-                    ):
-                        update_trade(
-                            trade["id"],
-                            entry_price=float(row["購入株価"]),
-                            exit_price=new_exit_price,
-                            quantity=int(row["株数"]),
-                            timeframe=new_timeframe,
-                        )
-                        st.rerun()
+        for year_index, (year, year_pnl, month_groups) in enumerate(groups):
+            with st.expander(
+                f"{year}年（年間損益: {year_pnl:+,.0f}円）",
+                expanded=(year_index == 0),
+            ):
+                for month, month_pnl, month_trades in month_groups:
+                    st.markdown(f"**{month}月　月間損益: {month_pnl:+,.0f}円**")
+                    _render_trade_table(month_trades, key_suffix=f"{year}_{month}")
+    else:
+        st.caption("決算済みの銘柄はまだありません。")
 
     focus_id = st.session_state.get("trades_chart_focus_id")
     focus_trade = next((t for t in trades if t["id"] == focus_id), None)
@@ -1065,6 +1096,31 @@ def _render_trades_section():
             "削除・監視銘柄への移動を行うには、表の「表示」列で対象の"
             "銘柄にチェックを入れてください。"
         )
+        return
+
+    is_closed = focus_trade["exit_price"] is not None
+
+    # 決算済みの取引は、確定した損益の記録を誤って消してしまわないよう
+    # 削除ボタンを出さない。「保有中に移動」（決算株価をクリアするだけ）で
+    # 誤って決算済みにしてしまった場合の修正ができるため、削除しか手段が
+    # ないわけではない
+    if is_closed:
+        if st.button(
+            "選択した取引を保有中に移動",
+            key="move_to_open_trade_button",
+            use_container_width=True,
+            help="決算株価の入力を誤った場合の修正用。決算株価をクリアし、"
+            "保有中に戻します",
+        ):
+            update_trade(
+                focus_trade["id"],
+                entry_price=focus_trade["entry_price"],
+                exit_price=None,
+                quantity=focus_trade["quantity"],
+                timeframe=focus_trade["timeframe"],
+            )
+            st.session_state["trades_chart_focus_id"] = None
+            st.rerun()
         return
 
     col_delete, col_move = st.columns(2)
@@ -1222,7 +1278,7 @@ def _render_watchlist_section():
             "株数", min_value=1, value=100, step=100
         )
         move_exit_price_input = st.number_input(
-            "決済株価（利確/損切。未決済なら0のまま）",
+            "決算株価（利確/損切。未決済なら0のまま）",
             min_value=0.0,
             value=0.0,
         )
