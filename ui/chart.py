@@ -698,6 +698,10 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         // しない（後述）ため、クロージャ内のこの2変数が単一の真実の情報源になる
         let currentGd = null;
         let currentScrollState = null;
+        // 矢印キーを押しっぱなしにしたときの自動リピート対策（詳細は
+        // 下のkeydownHandler・applyPendingKeyMoveのコメント参照）
+        let keyMoveInFlight = false;
+        let pendingKeyIndex = null;
         // restoreWindow()が仕掛ける再適用タイマー（下記参照）。新しい
         // restoreWindow()呼び出しのたびに、前回分がまだ残っていればキャンセル
         // する（キャンセルしないと、日足/週足/月足の切替やMAチェックボックスの
@@ -822,6 +826,40 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             // ボックス等、選択後もフォーカスが残り続ける）にある状態だと、
             // そのinput自身がカーソル移動のため矢印キーのbubbleを止めて
             // しまい、document（bubbleフェーズ）まで届かないことがある
+            // 矢印キーを押しっぱなしにするとブラウザの自動リピートでkeydownが
+            // 連発される。1回ごとに素直にPlotly.relayoutを呼ぶと、前の
+            // relayout（呼び出し内でplotly_relayoutイベント経由の価格軸
+            // 再フィットも連鎖する）がまだ処理中のうちに次のrelayoutを
+            // 呼ぶ「再入」が起き、Plotly.js側の内部状態が壊れてそれ以降
+            // 矢印キーはおろかドラッグ等の操作にも一切反応しなくなることが
+            // あった（実際に発生した不具合）。そのため直前のrelayoutが
+            // 完了するまでは新たなrelayoutを呼ばず、目標インデックスだけを
+            // pendingKeyIndexへ書き換えて溜めておき、完了次第その最新値を
+            // 一度だけ適用する（押しっぱなし中の細かい移動が全部律儀に
+            // 再現されるわけではないが、最終的に指を離した位置には届く）
+            function applyPendingKeyMove(target, scrollState) {{
+                if (pendingKeyIndex === null) return;
+                const nextIndex = pendingKeyIndex;
+                pendingKeyIndex = null;
+                scrollState.startIndex = nextIndex;
+                const endIndex = Math.min(
+                    nextIndex + scrollState.visibleBarCount - 1,
+                    scrollState.barDates.length - 1
+                );
+                keyMoveInFlight = true;
+                window.parent.Plotly.relayout(target, {{
+                    "xaxis.range": [
+                        scrollState.barDates[nextIndex],
+                        scrollState.barDates[endIndex],
+                    ],
+                }}).then(function() {{
+                    keyMoveInFlight = false;
+                    applyPendingKeyMove(target, scrollState);
+                }}).catch(function() {{
+                    keyMoveInFlight = false;
+                }});
+            }}
+
             const keydownHandler = function(e) {{
                 if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
 
@@ -831,27 +869,18 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     return;
                 }}
 
+                const baseIndex = pendingKeyIndex !== null ? pendingKeyIndex : scrollState.startIndex;
                 let nextIndex;
                 if (e.key === "ArrowLeft") {{
-                    nextIndex = Math.max(scrollState.startIndex - 1, 0);
+                    nextIndex = Math.max(baseIndex - 1, 0);
                 }} else {{
-                    nextIndex = Math.min(scrollState.startIndex + 1, scrollState.maxStartIndex);
+                    nextIndex = Math.min(baseIndex + 1, scrollState.maxStartIndex);
                 }}
-                const endIndex = Math.min(
-                    nextIndex + scrollState.visibleBarCount - 1,
-                    scrollState.barDates.length - 1
-                );
-                // startIndexの更新自体はplotly_relayoutハンドラ側でも
-                // 行われるが、ここで即時に反映しておくことで連続で矢印キーを
-                // 押したときにも正しい起点から1本ずつ動かせる
-                scrollState.startIndex = nextIndex;
-                window.parent.Plotly.relayout(target, {{
-                    "xaxis.range": [
-                        scrollState.barDates[nextIndex],
-                        scrollState.barDates[endIndex],
-                    ],
-                }});
+                pendingKeyIndex = nextIndex;
                 e.preventDefault();
+
+                if (keyMoveInFlight) return;
+                applyPendingKeyMove(target, scrollState);
             }};
             window.parent.__swingHunterScrollKeyHandler = keydownHandler;
             window.parent.document.addEventListener("keydown", keydownHandler, true);
