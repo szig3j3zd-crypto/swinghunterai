@@ -158,10 +158,9 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
     result
         "candidates"（スコア降順の候補リスト）・"watchlist"（監視銘柄候補
         リスト）のキーを持つdict。各要素はcode, company_name と
-        evaluate_entry() の戻り値を含む。"candidates"は、既に保有中
-        （未決済）の売買銘柄・監視銘柄として登録済みの銘柄コードを除外する
-        （方向は問わない。決算済みのトレードは除外しない）。"watchlist"には
-        この除外を適用しない
+        evaluate_entry() の戻り値を含む。どちらも、既に保有中（未決済）の
+        売買銘柄・監視銘柄として登録済みの銘柄コードを除外する（方向は
+        問わない。決算済みのトレードは除外しない）
     """
 
     if stocks is None:
@@ -230,9 +229,11 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
             continue
 
     # 既に保有中（未決済）の売買銘柄、または監視銘柄として登録済みの銘柄は
-    # 候補一覧から除外する（決算済みのトレードは対象外。方向は問わない）
+    # 候補一覧・監視銘柄候補一覧のどちらからも除外する
+    # （決算済みのトレードは対象外。方向は問わない）
     excluded_codes = get_open_trade_codes() | get_watchlist_codes()
     candidates = [c for c in candidates if c["code"] not in excluded_codes]
+    watchlist = [w for w in watchlist if w["code"] not in excluded_codes]
 
     candidates = _filter_by_market_cap(
         candidates, ticker_by_code, min_market_cap, max_market_cap

@@ -161,6 +161,66 @@ def test_get_today_scan_results_excludes_watchlist_codes():
         delete_watchlist_stocks_by_code(code)
 
 
+def test_get_today_scan_results_excludes_open_trade_codes_from_watchlist(monkeypatch):
+    create_trades_table()
+
+    stocks = get_active_stocks().head(3)
+    code = stocks.iloc[0]["code"]
+    company_name = stocks.iloc[0]["company_name"]
+
+    add_trade(
+        code=code, company_name=company_name, direction="long", timeframe="daily",
+        trade_date="2000-01-01", entry_price=100.0, exit_price=None, quantity=100,
+    )
+
+    def fake_evaluate_stock(code, direction, timeframe, min_history, modules,
+                             ma_mode, min_volume, min_price, max_price):
+        return {"is_entry_candidate": False, "is_watch_candidate": True}
+
+    monkeypatch.setattr("service.screening_service._evaluate_stock", fake_evaluate_stock)
+
+    try:
+        result = get_today_scan_results(
+            direction="long", stocks=stocks, modules=["ma_order", "bounce"],
+            min_market_cap=0,
+        )
+
+        assert code not in [w["code"] for w in result["watchlist"]]
+    finally:
+        for trade in get_all_trades():
+            if trade["code"] == code and trade["trade_date"] == "2000-01-01":
+                delete_trade(trade["id"])
+
+
+def test_get_today_scan_results_excludes_watchlist_codes_from_watchlist(monkeypatch):
+    create_watchlist_table()
+
+    stocks = get_active_stocks().head(3)
+    code = stocks.iloc[0]["code"]
+    company_name = stocks.iloc[0]["company_name"]
+
+    add_watchlist_stock(
+        code=code, company_name=company_name, direction="long", timeframe="daily",
+        added_date="2000-01-01",
+    )
+
+    def fake_evaluate_stock(code, direction, timeframe, min_history, modules,
+                             ma_mode, min_volume, min_price, max_price):
+        return {"is_entry_candidate": False, "is_watch_candidate": True}
+
+    monkeypatch.setattr("service.screening_service._evaluate_stock", fake_evaluate_stock)
+
+    try:
+        result = get_today_scan_results(
+            direction="long", stocks=stocks, modules=["ma_order", "bounce"],
+            min_market_cap=0,
+        )
+
+        assert code not in [w["code"] for w in result["watchlist"]]
+    finally:
+        delete_watchlist_stocks_by_code(code)
+
+
 def test_get_today_scan_results_with_empty_modules_skips_judgment():
     stocks = get_active_stocks().head(5)
 
