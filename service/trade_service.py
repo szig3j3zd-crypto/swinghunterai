@@ -1,18 +1,30 @@
+from config.config import CAPITAL_GAINS_TAX_RATE
+
+
 def calculate_pnl(trade):
 
     """
-    トレード1件の損益（円）を計算する
+    トレード1件の税引後損益（円）を計算する
+
+    特定口座（源泉徴収あり）での運用を前提に、利益が出たトレードには
+    譲渡益課税（`config.config.CAPITAL_GAINS_TAX_RATE`、20.315%）を
+    差し引いた税引後の手取り額を返す。損失のトレードは税還付が発生しない
+    ため、税引前の損失額をそのまま返す（特定口座内での年間の損益通算は
+    考慮しない、トレード単位の簡易計算）。trade["is_nisa"]がTrueなら
+    NISA口座での取引として非課税扱いにし、税引前の額をそのまま返す
+    （2026-08-26追加）
 
     Parameters
     ----------
     trade
-        direction（"long" | "short"）, entry_price, exit_price, quantity を
-        持つdict。exit_priceがNoneなら未決済
+        direction（"long" | "short"）, entry_price, exit_price, quantity,
+        is_nisa（省略可、デフォルトFalse）を持つdict。exit_priceがNoneなら
+        未決済
 
     Returns
     -------
     pnl
-        損益（円）。未決済（exit_price=None）ならNone
+        税引後損益（円）。未決済（exit_price=None）ならNone
     """
 
     if trade["exit_price"] is None:
@@ -23,7 +35,12 @@ def calculate_pnl(trade):
     else:
         diff = trade["entry_price"] - trade["exit_price"]
 
-    return diff * trade["quantity"]
+    gross_pnl = diff * trade["quantity"]
+
+    if gross_pnl <= 0 or trade.get("is_nisa"):
+        return gross_pnl
+
+    return gross_pnl * (1 - CAPITAL_GAINS_TAX_RATE)
 
 
 def total_pnl(trades):

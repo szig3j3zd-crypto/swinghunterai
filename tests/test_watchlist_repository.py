@@ -4,6 +4,7 @@ from database.watchlist_repository import (
     delete_watchlist_stock,
     delete_watchlist_stocks_by_code,
     get_all_watchlist_stocks,
+    update_watchlist_priority,
     update_watchlist_timeframe,
     watchlist_stock_exists,
 )
@@ -29,11 +30,24 @@ def test_add_delete_watchlist_stock_roundtrip():
         assert added["company_name"] == "テスト銘柄"
         assert added["direction"] == "long"
         assert added["timeframe"] == "daily"
+        assert added["priority"] == 0
 
         update_watchlist_timeframe(added["id"], "weekly")
 
         updated = next(s for s in get_all_watchlist_stocks() if s["id"] == added["id"])
         assert updated["timeframe"] == "weekly"
+
+        update_watchlist_priority(added["id"], True)
+        prioritized = next(
+            s for s in get_all_watchlist_stocks() if s["id"] == added["id"]
+        )
+        assert prioritized["priority"] == 1
+
+        update_watchlist_priority(added["id"], False)
+        unprioritized = next(
+            s for s in get_all_watchlist_stocks() if s["id"] == added["id"]
+        )
+        assert unprioritized["priority"] == 0
 
     finally:
         delete_watchlist_stock(added["id"])

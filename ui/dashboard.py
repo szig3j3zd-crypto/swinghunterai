@@ -38,6 +38,7 @@ from database.watchlist_repository import (
     delete_watchlist_stock,
     delete_watchlist_stocks_by_code,
     get_all_watchlist_stocks,
+    update_watchlist_priority,
     update_watchlist_timeframe,
 )
 from service.screening_service import (
@@ -83,6 +84,9 @@ WATCH_REASON_LABELS = {
     "bounce_approaching_watch": "MA20に接近中です（反発の反転待ち）。反転すればエントリー候補に昇格します",
     "bounce_below_ma20_watch": "MA20を下回っています。回復すればエントリー候補に昇格します",
     "bounce_above_ma20_watch": "MA20を上回っています。回復すればエントリー候補に昇格します",
+    "cross_watch_before": "MA60がMA100に接近中です（クロス待ち）。クロスすれば確認期間として監視を継続します",
+    "cross_watch_after": "MA60がMA100を突き抜けています（クロス後の確認期間中です）",
+    "order_watch_after": "並び順を構成するMAが交差し、並び順が完成しました（完成後の確認期間中です）",
 }
 
 MA_MODE_LABELS = {
@@ -119,6 +123,15 @@ CHART_DISPLAY_WIDTH_DEFAULT = "6ヶ月"
 # 日単位で見たい短い表示幅では「月/日」、それより長い表示幅では「年/月」で
 # 出来高チャート下の日付軸ラベルを表示する
 CHART_TICK_FORMAT_SHORT_WIDTHS = {"3ヶ月"}
+
+# ローソク足・出来高の棒は表示期間の各端（表示幅の左右端）のバーの
+# 中心座標ちょうどにx軸の端を合わせると、そのバー自身の幅の半分が軸の
+# 外にはみ出して縦半分しか描画されなくなる（ui.chart.build_scroll_sync_script
+# のJS側、及びスクロールバーで動かした先でも同様の理由で発生するため、
+# そちらにも同じ値を渡している）。バー1本分（暦日換算で概ね1日、
+# ui.chart.build_price_chartの出来高バー幅の設定と対応）の半分弱を
+# 両端に余白として足し、端のバーが欠けずに全体表示されるようにする
+CHART_BAR_EDGE_PADDING = pd.Timedelta(hours=9.6)
 
 
 def _period_label_to_offset(label):
@@ -175,13 +188,20 @@ def _candidate_row(candidate):
 
     判断基準が未選択（no_modules_selected）の場合は、出来高・株価フィルタを
     通過しただけの銘柄一覧のため、スコアや損切/利確価格は持たない
+
+    既に監視銘柄として登録済みの銘柄（is_already_watchlisted）は、「備考」列に
+    目印を付ける（行全体のグレー表示はst.dataframe呼び出し側で行う。
+    _watch_candidate_rowと同じ考え方）
     """
+
+    remark = "監視銘柄登録済み" if candidate.get("is_already_watchlisted") else ""
 
     if candidate.get("no_modules_selected"):
         return {
             "コード": candidate["code"],
             "銘柄名": candidate["company_name"],
             "株価": candidate["price"],
+            "備考": remark,
         }
 
     risk_reward = candidate["risk_reward_ratio"]
@@ -197,22 +217,64 @@ def _candidate_row(candidate):
         "リスクリワード比": (
             round(risk_reward, 2) if risk_reward is not None else None
         ),
+        "備考": remark,
     }
+
+
+def _watch_status_text(candidate):
+
+    """
+    監視銘柄候補の状況テキストを組み立てる
+
+    反発（entry_signal_spec.md 6章）・MA60/100接近ウォッチ（14章）・並び順
+    ウォッチ（15章）は判定ロジックが別物で、1銘柄が複数の監視条件に同時に
+    該当することがあるため、該当する基準をすべて「／」で区切って列挙する
+    （1つのみ該当する場合はその基準のみ表示する）
+    """
+
+    parts = []
+
+    if candidate.get("is_watch_candidate"):
+        reason = WATCH_REASON_LABELS.get(candidate.get("reason"), candidate.get("reason"))
+        parts.append(f"[反発] {reason}")
+
+    if candidate.get("is_cross_watch_candidate"):
+        reason = WATCH_REASON_LABELS.get(
+            candidate.get("cross_watch_reason"), candidate.get("cross_watch_reason")
+        )
+        parts.append(f"[MA60/100接近] {reason}")
+
+    if candidate.get("is_order_watch_candidate"):
+        reason = WATCH_REASON_LABELS.get(
+            candidate.get("order_watch_reason"), candidate.get("order_watch_reason")
+        )
+        parts.append(f"[並び順] {reason}")
+
+    return "／".join(parts)
 
 
 def _watch_candidate_row(candidate):
 
     """
     監視銘柄候補1件を表示用のdictに変換する（entry_signal_spec.md 6章の
-    「反発の手前」。エントリー候補と違いスコア・損切/利確価格を持たないため
+    「反発の手前」・14章のMA60/100接近ウォッチをまとめた1つの表で使う。
+    エントリー候補と違いスコア・損切/利確価格を持たないため
     _candidate_rowとは別の列構成にする）
+
+    既に監視銘柄として登録済みの銘柄（is_already_watchlisted）は、状況欄の
+    先頭に目印を付ける（行全体のグレー表示はst.dataframe呼び出し側で行う）
     """
+
+    status = _watch_status_text(candidate)
+
+    if candidate.get("is_already_watchlisted"):
+        status = f"[監視銘柄登録済み] {status}" if status else "[監視銘柄登録済み]"
 
     return {
         "コード": candidate["code"],
         "銘柄名": candidate["company_name"],
         "株価": candidate["price"],
-        "状況": WATCH_REASON_LABELS.get(candidate.get("reason"), candidate.get("reason")),
+        "状況": status,
     }
 
 
@@ -226,13 +288,170 @@ def _on_candidate_table_select(table_key, candidates_list):
     フォーカスを切り替えた直後でも、この関数の外側で毎回選択行を読み直すと
     "candidate"に戻ってしまう。コールバックにすることで、実際に行を
     クリックしたときだけfocus_modeが更新されるようにする
+
+    既に監視銘柄として登録済みの銘柄（is_already_watchlisted）が選択された
+    場合は無視する（_on_watch_candidate_table_selectと同じ考え方。グレー表示と
+    合わせて「選択できない」ように振る舞わせる）
+
+    候補一覧・監視銘柄候補一覧は別々のst.dataframeウィジェットのため、
+    片方で行を選択しても、もう片方のチェックは自動では外れない。
+    watch_selection_versionをインクリメントして監視銘柄候補一覧のkeyを
+    変えることで、次のレンダリングでその表を選択状態の無い新しいウィジェット
+    として扱わせ、チェックが2つ同時に付いたままにならないようにする
     """
 
     selection = st.session_state[table_key]["selection"]["rows"]
 
-    if selection and selection[0] < len(candidates_list):
-        st.session_state["focus_mode"] = "candidate"
-        st.session_state["focus_candidate"] = candidates_list[selection[0]]
+    if not selection or selection[0] >= len(candidates_list):
+        return
+
+    selected_candidate = candidates_list[selection[0]]
+
+    if selected_candidate.get("is_already_watchlisted"):
+        return
+
+    st.session_state["focus_mode"] = "candidate"
+    st.session_state["focus_candidate"] = selected_candidate
+    st.session_state["watch_selection_version"] = (
+        st.session_state.get("watch_selection_version", 0) + 1
+    )
+    st.session_state["scroll_to_chart"] = True
+
+
+def _on_watch_candidate_table_select(table_key, candidates_list):
+
+    """
+    監視銘柄候補一覧の行選択コールバック
+
+    _on_candidate_table_selectとの違い: 既に監視銘柄として登録済みの銘柄
+    （is_already_watchlisted）が選択された場合は無視する。Streamlitには
+    行ごとに選択を無効化する機能が無いため、選択イベント自体は発生するが、
+    focus_mode/focus_candidateを更新しないことでクリックを実質無効化する
+    （グレー表示と合わせて「選択できない」ように振る舞わせる）
+
+    候補一覧側のチェックが付いたままにならないよう、candidates_selection_version
+    をインクリメントして候補一覧のkeyを変える（_on_candidate_table_select参照）
+    """
+
+    selection = st.session_state[table_key]["selection"]["rows"]
+
+    if not selection or selection[0] >= len(candidates_list):
+        return
+
+    selected_candidate = candidates_list[selection[0]]
+
+    if selected_candidate.get("is_already_watchlisted"):
+        return
+
+    st.session_state["focus_mode"] = "candidate"
+    st.session_state["focus_candidate"] = selected_candidate
+    st.session_state["candidates_selection_version"] = (
+        st.session_state.get("candidates_selection_version", 0) + 1
+    )
+    st.session_state["scroll_to_chart"] = True
+
+
+def _style_already_watchlisted_rows(df, candidates_list):
+
+    """
+    候補一覧・監視銘柄候補一覧のうち、既に監視銘柄として登録済みの行を
+    グレーアウトする
+
+    st.dataframe()はpandas Styler（.style.apply()等で作成）を渡しても
+    行選択（on_select）が使えるため、選択機能はそのまま維持しつつ見た目だけ
+    変更できる。Styler経由だと数値列がst.dataframeの既定フォーマットを
+    通らず末尾に「.000000」等が付いてしまうため、数値列だけ明示的に
+    フォーマットし直す（末尾の0を落としつつ、実用上十分な精度は保つ）
+    """
+
+    def _style_row(row):
+        if candidates_list[row.name].get("is_already_watchlisted"):
+            return ["color: #999999; font-style: italic"] * len(row)
+        return [""] * len(row)
+
+    numeric_columns = df.select_dtypes(include="number").columns
+
+    return (
+        df.style
+        .apply(_style_row, axis=1)
+        .format({column: "{:.10g}" for column in numeric_columns})
+    )
+
+
+def _render_scroll_if_needed():
+
+    """
+    直前の操作でチャート表示位置が変わった、またはスキャンを実行した直後の
+    再実行であれば、該当する位置まで自動でスクロールする
+
+    - st.session_state["scroll_to_chart"]: 銘柄をチェックしてチャート表示位置
+      （focus_slot）が変わった場合に立てる。「株価チャート」の見出し
+      （_render_chart_blockの`st.markdown("##### 株価チャート")`）が
+      ビューポート上端に来るまでスクロールする。スキャン・売買銘柄・監視銘柄
+      いずれのタブでも、チャートは表より上に表示されるため、表の下の方の行を
+      チェックした場合にチャートが表示されたことに気づけるようにする
+    - st.session_state["scroll_to_page_top"]: サイドバーの「候補を更新」で
+      新しいスキャン結果を表示した場合に立てる。ページの一番上までスクロールする
+
+    どちらのフラグも実行後は消費して倒す（次の再実行ではユーザーが再度操作
+    しない限りスクロールしない）。
+
+    st.components.v1.html()呼び出し自体は毎回同じ形で（スクロール不要な場合は
+    空のscriptで）行い、呼び出す/呼び出さないを条件分岐しない。この関数は
+    st.tabs()より前で呼ばれるため、コンポーネント要素の有無を再実行のたびに
+    変えると、st.tabs()がキーの無いウィジェットとして位置ベースで
+    再識別されてしまい、選択中のタブが変わるたびに「スキャン」タブへ
+    リセットされてしまう不具合があった（2026-08-23発見・修正）
+    """
+
+    scroll_to_chart = st.session_state.pop("scroll_to_chart", False)
+    scroll_to_page_top = st.session_state.pop("scroll_to_page_top", False)
+
+    if scroll_to_chart:
+        script = """
+            function scrollToChartHeading() {
+                var doc = window.parent.document;
+                var headings = doc.querySelectorAll('h1, h2, h3, h4, h5, h6');
+                for (var i = 0; i < headings.length; i++) {
+                    var heading = headings[i];
+                    if (heading.textContent.trim() === '株価チャート'
+                            && heading.offsetParent !== null) {
+                        heading.scrollIntoView({behavior: 'smooth', block: 'start'});
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            if (!scrollToChartHeading()) {
+                setTimeout(function() {
+                    if (!scrollToChartHeading()) {
+                        // メインコンテンツはwindow/bodyではなく、
+                        // section[data-testid="stMain"]自身がスクロールする
+                        // 独立したコンテナになっている（Streamlitのレイアウト仕様）
+                        var mainSection = window.parent.document.querySelector(
+                            'section[data-testid="stMain"]'
+                        );
+                        if (mainSection) {
+                            mainSection.scrollTo({top: 0, behavior: 'smooth'});
+                        }
+                    }
+                }, 300);
+            }
+        """
+    elif scroll_to_page_top:
+        script = """
+            var mainSection = window.parent.document.querySelector(
+                'section[data-testid="stMain"]'
+            );
+            if (mainSection) {
+                mainSection.scrollTo({top: 0, behavior: 'smooth'});
+            }
+        """
+    else:
+        script = ""
+
+    components.html(f"<script>(function() {{ {script} }})();</script>", height=0)
 
 
 
@@ -308,19 +527,25 @@ def _render_focus_block(label, result, code, chart_timeframe):
             use_container_width=True,
             hide_index=True,
         )
-    elif result.get("is_watch_candidate"):
-        price = result.get("price")
-        price_note = f"　現在の株価: {price}円" if price is not None else ""
-        watch_note = WATCH_REASON_LABELS.get(result.get("reason"), "監視中です")
-        st.warning(f"監視銘柄です（反発モジュール: {watch_note}）{price_note}")
     else:
-        reason_label = SKIP_REASON_LABELS.get(result["reason"], result["reason"])
         price = result.get("price")
         price_note = f"　現在の株価: {price}円" if price is not None else ""
-        st.info(
-            f"本日はエントリー候補ではありません"
-            f"（理由: {reason_label}）{price_note}"
-        )
+
+        # 反発・MA60/100接近ウォッチ・並び順ウォッチは判定ロジックが別物のため、
+        # 同じ銘柄が複数の監視条件に該当することがある。該当する基準をすべて
+        # 1つのメッセージにまとめて表示する（_watch_status_text参照）
+        if (
+            result.get("is_watch_candidate")
+            or result.get("is_cross_watch_candidate")
+            or result.get("is_order_watch_candidate")
+        ):
+            st.warning(f"監視銘柄です（{_watch_status_text(result)}）{price_note}")
+        else:
+            reason_label = SKIP_REASON_LABELS.get(result["reason"], result["reason"])
+            st.info(
+                f"本日はエントリー候補ではありません"
+                f"（理由: {reason_label}）{price_note}"
+            )
 
     _render_chart_block(code, chart_timeframe, key_prefix="scan")
 
@@ -498,6 +723,13 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     x_range, y_range, volume_range = compute_visible_window(
         chart_df_in_period, window_start_date, window_end_date
     )
+    # y_range/volume_rangeは実際の表示対象バー（window_start_date〜
+    # window_end_date）だけから算出したいのでcompute_visible_window()には
+    # 渡さず、表示用のx_rangeにのみ余白を足す（CHART_BAR_EDGE_PADDING参照）
+    x_range = [
+        x_range[0] - CHART_BAR_EDGE_PADDING,
+        x_range[1] + CHART_BAR_EDGE_PADDING,
+    ]
 
     st.plotly_chart(
         build_price_chart(
@@ -591,6 +823,7 @@ with st.sidebar:
     universe_labels = st.multiselect(
         "採用指数（対象銘柄の絞り込み、複数選択可）",
         options=list(UNIVERSE_OPTIONS.keys()),
+        default=["日経225", "JPX日経400"],
         help="複数選択すると、選択した指数すべての銘柄を合わせて対象にします。",
     )
 
@@ -681,10 +914,11 @@ elif run_button:
     with st.spinner(f"{universe_display}をスキャン中..."):
         scan_stocks = _combine_universes(universe_labels)
 
-        # 候補一覧・監視銘柄候補（entry_signal_spec.md 6章「反発の手前」）を
-        # 1回の全銘柄スキャンでまとめて取得する（個別に呼ぶと全銘柄スキャンが
-        # 2回走ってしまうため）。監視銘柄候補は"bounce"を選択していない限り
-        # 常に空リストになる
+        # 候補一覧・監視銘柄候補（entry_signal_spec.md 6章「反発の手前」・
+        # 14章「MA60/100接近」をまとめた1つのリスト）を1回の全銘柄スキャンで
+        # まとめて取得する（個別に呼ぶと全銘柄スキャンが2回走ってしまうため）。
+        # 監視銘柄候補は"bounce"（反発）・"ma_cross_watch"（MA60/100接近）の
+        # どちらも選択していない限り常に空リストになる
         scan_results = get_today_scan_results(
             direction=direction,
             timeframe=timeframe,
@@ -709,12 +943,35 @@ elif run_button:
         st.session_state["focus_mode"] = None
         st.session_state["focus_candidate"] = None
         st.session_state["scan_version"] = st.session_state.get("scan_version", 0) + 1
+        st.session_state["scroll_to_page_top"] = True
+
+        # 売買銘柄・監視銘柄タブを見ている状態で「候補を更新」を押した場合も、
+        # 結果を確認できるようスキャンタブに戻す（active_tabはst.tabs()の
+        # key。on_change="rerun"を指定しているため、ここで書き換えた値が
+        # 次の描画に反映される）
+        st.session_state["active_tab"] = "スキャン"
 
 candidates = st.session_state.get("candidates")
 watch_candidates = st.session_state.get("watch_candidates")
 
+# scroll_to_page_topは直前の「候補を更新」処理（同じスクリプト実行の中、
+# st.rerun()を挟まずここまで来ている）で立てられる。st.tabs()より前だが
+# scroll_to_page_topが立ってから呼ぶ必要があるため、この位置で呼ぶ
+# （呼び出し自体はスクロール不要な場合も含め毎回同じ形で行う。理由は
+# _render_scroll_if_needed()のdocstring参照）
+_render_scroll_if_needed()
 
-tab_scan, tab_trades, tab_watchlist = st.tabs(["スキャン", "売買銘柄", "監視銘柄"])
+tab_scan, tab_trades, tab_watchlist = st.tabs(
+    ["スキャン", "売買銘柄", "監視銘柄"],
+    # key・on_change="rerun"を指定することで、st.session_state["active_tab"]を
+    # 読み書きできるようにする（「候補を更新」クリック時にスキャンタブへ戻す用途）。
+    # 以前はこれが原因でタブ・見出しの二重表示を起こしたが、原因は
+    # _render_scroll_if_needed()の呼び出しがst.tabs()より前で不安定に
+    # 出現/消失していたこと（st.tabs自体の問題ではなかった）と判明したため、
+    # そちらを安定化したうえで再度有効にしている
+    key="active_tab",
+    on_change="rerun",
+)
 
 with tab_scan:
     scan_used_modules = st.session_state.get("scan_used_modules", True)
@@ -738,17 +995,31 @@ with tab_scan:
         else:
             st.warning("条件に合う銘柄がありません。")
     else:
+        st.markdown(
+            '<span style="color: #FFC107; font-size: 0.9rem;">エントリー候補</span>',
+            unsafe_allow_html=True,
+        )
+
         rows = [
             {"順位": rank, **_candidate_row(candidate)}
             for rank, candidate in enumerate(candidates, start=1)
         ]
 
         # scan_versionをkeyに含めることで、新しいスキャンのたびに
-        # 選択状態がリセットされた新しい表として扱われる
-        table_key = f"candidates_table_{st.session_state.get('scan_version', 0)}"
+        # 選択状態がリセットされた新しい表として扱われる。selection_versionも
+        # 含めることで、もう一方の表（監視銘柄候補）で行を選択した際に、
+        # こちらの表だけ新しいwidgetとして選択状態をリセットできるようにする
+        # （_on_watch_candidate_table_select参照。2つの表を跨いで同時に
+        # チェックが入ったままにならないようにするため）
+        table_key = (
+            f"candidates_table_{st.session_state.get('scan_version', 0)}"
+            f"_{st.session_state.get('candidates_selection_version', 0)}"
+        )
 
+        # 既に監視銘柄として登録済みの行はグレー表示・選択不可にする
+        # （_style_already_watchlisted_rows・_on_candidate_table_select参照）
         st.dataframe(
-            pd.DataFrame(rows),
+            _style_already_watchlisted_rows(pd.DataFrame(rows), candidates),
             use_container_width=True,
             hide_index=True,
             on_select=lambda: _on_candidate_table_select(table_key, candidates),
@@ -764,23 +1035,37 @@ with tab_scan:
             "行をクリックするとチャートを表示します。"
         )
 
+    # 反発（entry_signal_spec.md 6章）・MA60/100接近ウォッチ（14章）・並び順
+    # ウォッチ（15章）は判定ロジックこそ別物だが、どれも「エントリー候補には
+    # まだ届かないが監視する価値がある状態」という位置づけは同じなため、
+    # 1つの表にまとめて表示する（2026-08-22改訂で反発・MA60/100接近を統合、
+    # 2026-08-23改訂で並び順を追加）。watch_candidates自体は
+    # service.screening_service._is_merged_watch_candidate()で、選択中の
+    # 監視系モジュールをすべて満たす銘柄だけに絞り込み済み（AND結合）
     if watch_candidates:
         st.divider()
-        st.caption("監視銘柄候補（反発の一歩手前）")
+        st.caption("監視銘柄候補")
 
         watch_rows = [
             {"順位": rank, **_watch_candidate_row(candidate)}
             for rank, candidate in enumerate(watch_candidates, start=1)
         ]
 
-        # candidates_tableと同様、scan_versionをkeyに含めて選択状態をリセットする
-        watch_table_key = f"watch_candidates_table_{st.session_state.get('scan_version', 0)}"
+        # candidates_tableと同様、scan_version・selection_versionをkeyに含めて
+        # 選択状態をリセットする（selection_versionは候補一覧側で行を選択した際に
+        # インクリメントされ、こちらの表の選択状態だけをクリアする）
+        watch_table_key = (
+            f"watch_candidates_table_{st.session_state.get('scan_version', 0)}"
+            f"_{st.session_state.get('watch_selection_version', 0)}"
+        )
 
+        # 既に監視銘柄として登録済みの行はグレー表示・選択不可にする
+        # （_style_already_watchlisted_rows・_on_watch_candidate_table_select参照）
         st.dataframe(
-            pd.DataFrame(watch_rows),
+            _style_already_watchlisted_rows(pd.DataFrame(watch_rows), watch_candidates),
             use_container_width=True,
             hide_index=True,
-            on_select=lambda: _on_candidate_table_select(watch_table_key, watch_candidates),
+            on_select=lambda: _on_watch_candidate_table_select(watch_table_key, watch_candidates),
             selection_mode="single-row",
             key=watch_table_key,
         )
@@ -788,9 +1073,11 @@ with tab_scan:
         st.caption(
             f"{len(watch_candidates)}件の監視銘柄候補。行をクリックするとチャートを表示します。"
         )
-    elif candidates is not None and "bounce" in modules:
+    elif candidates is not None and (
+        "bounce" in modules or "ma_cross_watch" in modules or "ma_order" in modules
+    ):
         st.divider()
-        st.caption("監視銘柄候補（反発の一歩手前）: 該当銘柄はありません。")
+        st.caption("監視銘柄候補: 該当銘柄はありません。")
 
     # 確保しておいた表示位置に、確定したフォーカス銘柄（検索 or 候補選択）を描画する
     focus_mode = st.session_state.get("focus_mode")
@@ -855,6 +1142,10 @@ with tab_scan:
                     min_value=0.0,
                     value=0.0,
                 )
+                exit_date_input = st.date_input(
+                    "決済日（決算株価を入力した場合のみ）", value=date.today()
+                )
+                is_nisa_input = st.checkbox("NISA枠（非課税）")
 
                 if st.form_submit_button("売買銘柄に追加"):
                     add_trade(
@@ -868,6 +1159,10 @@ with tab_scan:
                             exit_price_input if exit_price_input > 0 else None
                         ),
                         quantity=int(quantity_input),
+                        is_nisa=is_nisa_input,
+                        exit_date=(
+                            str(exit_date_input) if exit_price_input > 0 else None
+                        ),
                     )
 
                     # 監視から保有へ卒業したとみなし、監視銘柄に残っていれば
@@ -922,7 +1217,39 @@ with tab_scan:
         )
 
 
-def _render_trade_table(trades_subset, key_suffix):
+def _style_negative_pnl_red(df):
+
+    """
+    「損益（税引後）」列がマイナスの行を、行全体を赤字にして表示する
+
+    st.data_editor()にpandas Styler経由で渡すと、Styler由来の見た目は
+    編集不可（disabled）の列にのみ適用される（st.data_editorの仕様）。
+    行全体を漏れなく赤字にするため、_render_trade_table側で決算済みの
+    行は全列disabled指定にしている（read_only=True。2026-08-26改訂。
+    以前は一部列のみ赤字になっていた）
+
+    Styler経由だと、column_configで書式を指定していない数値列
+    （購入株価・株数・損益（税引後）等）がst.data_editorの既定フォーマットを
+    通らず末尾に「.000000」等が付いてしまうため、明示的にフォーマットし
+    直す（末尾の0を落としつつ、実用上十分な精度は保つ。決算株価は
+    column_config.NumberColumnが優先されるためここでの指定と競合しない）
+    """
+
+    def _style_row(row):
+        if pd.notna(row["損益（税引後）"]) and row["損益（税引後）"] < 0:
+            return ["color: #d32f2f"] * len(row)
+        return [""] * len(row)
+
+    numeric_columns = df.select_dtypes(include="number").columns
+
+    return (
+        df.style
+        .apply(_style_row, axis=1)
+        .format({column: "{:.10g}" for column in numeric_columns})
+    )
+
+
+def _render_trade_table(trades_subset, key_suffix, read_only=False):
 
     """
     トレード一覧を1つのdata_editorで描画する（保有中セクション・決算済み
@@ -933,6 +1260,15 @@ def _render_trade_table(trades_subset, key_suffix):
     値ありへ（またはその逆へ）編集すると、次の再実行時にexit_priceの
     有無で保有中/決算済みのどちらに振り分けるかが変わり、結果的に
     そちらのセクションへ表示が移動する
+
+    read_only=True（決算済みセクションで使用、2026-08-26追加）の場合、
+    「表示」「NISA」「決済日」以外の列を編集不可にする。損益がマイナスの
+    行を行全体赤字にするための制約（st.data_editorはStyler由来の見た目を
+    編集不可の列にのみ適用する）で、プラスの決算済み取引も含め対象にする。
+    決算済みの取引の取引日・価格・株数・時間足を修正したい場合は、いったん
+    「保有中に移動」してから保有中セクション（read_only=False）で編集する。
+    NISA区分・決済日だけは決算済みでも直接編集できる（税区分の後からの
+    修正や、決済日が未記録の既存トレードへの後入力がよくあるため）
     """
 
     current_focus_id = st.session_state.get("trades_chart_focus_id")
@@ -944,37 +1280,68 @@ def _render_trade_table(trades_subset, key_suffix):
                 "コード": trade["code"],
                 "銘柄名": trade["company_name"],
                 "方向": DIRECTION_LABELS[trade["direction"]],
+                "NISA": bool(trade.get("is_nisa", False)),
                 "時間足": TIMEFRAME_LABELS[trade["timeframe"]],
-                "取引日": trade["trade_date"],
+                "取引日": date.fromisoformat(trade["trade_date"]),
                 "購入株価": trade["entry_price"],
                 "決算株価": trade["exit_price"],
+                "決済日": (
+                    date.fromisoformat(trade["exit_date"])
+                    if trade.get("exit_date") else None
+                ),
                 "株数": trade["quantity"],
-                "損益": calculate_pnl(trade),
+                "損益（税引後）": calculate_pnl(trade),
             }
             for trade in trades_subset
         ],
         index=[trade["id"] for trade in trades_subset],
     )
 
+    disabled_columns = ["コード", "銘柄名", "方向", "損益（税引後）"]
+    if read_only:
+        # 決算済みの取引は（NISA区分・決済日を除き）編集不可にする。損益が
+        # マイナスの行を行全体赤字にするための制約（st.data_editorはStyler
+        # 由来の見た目を編集不可の列にのみ適用する）で、勝ちトレードも含め
+        # 決算済み全体を対象にする。修正が必要な場合は「保有中に移動」してから
+        # 編集する
+        disabled_columns += ["時間足", "取引日", "購入株価", "決算株価", "株数"]
+
     edited_df = st.data_editor(
-        display_df,
+        _style_negative_pnl_red(display_df),
         # keyにcurrent_focus_idを含める: 選択が変わるたびにウィジェットを
         # 新規生成させ、st.data_editorが「表示」列の過去の編集状態を
         # 引きずって選択が正しく切り替わらない（チェックが更新されず
         # 再実行が終わらない）事象を避ける
         key=f"trade_editor_{key_suffix}_{current_focus_id}",
         use_container_width=True,
-        disabled=["コード", "銘柄名", "方向", "取引日", "損益"],
+        disabled=disabled_columns,
         column_config={
             "表示": st.column_config.CheckboxColumn(
                 help="チェックした銘柄のチャートを上に表示します"
             ),
+            "NISA": st.column_config.CheckboxColumn(
+                help="NISA口座での取引はチェック。税引後損益の計算で"
+                "譲渡益課税を適用しません（非課税）"
+            ),
+            "取引日": st.column_config.DateColumn(
+                format="YYYY-MM-DD",
+                help="登録間違いの修正用。エントリーした日付を修正できます",
+            ),
             "決算株価": st.column_config.NumberColumn(
                 help="値を入れると決算済みとして扱われ、決算済みセクションへ移動します"
+            ),
+            "決済日": st.column_config.DateColumn(
+                format="YYYY-MM-DD",
+                help="決算株価を入力したときの決済日（受け渡し日）を入力できます",
             ),
             "時間足": st.column_config.SelectboxColumn(
                 options=list(TIMEFRAME_LABELS.values()),
                 help="日足/週足を間違えて登録した場合はここで修正できます",
+            ),
+            "損益（税引後）": st.column_config.NumberColumn(
+                help="特定口座（源泉徴収あり）を前提に、利益には譲渡益課税"
+                "20.315%を差し引いた税引後の額で表示しています"
+                "（NISA区分のトレードは非課税）"
             ),
         },
     )
@@ -987,6 +1354,7 @@ def _render_trade_table(trades_subset, key_suffix):
 
     if newly_checked_ids:
         st.session_state["trades_chart_focus_id"] = newly_checked_ids[0]
+        st.session_state["scroll_to_chart"] = True
         st.rerun()
     elif (
         current_focus_id in trade_ids
@@ -1001,12 +1369,25 @@ def _render_trade_table(trades_subset, key_suffix):
             None if pd.isna(row["決算株価"]) else float(row["決算株価"])
         )
         new_timeframe = TIMEFRAME_LABELS_INVERSE[row["時間足"]]
+        # 取引日は必須項目のため、空欄にされた場合は元の値を保持する
+        new_trade_date = (
+            trade["trade_date"] if pd.isna(row["取引日"])
+            else pd.Timestamp(row["取引日"]).strftime("%Y-%m-%d")
+        )
+        new_exit_date = (
+            None if pd.isna(row["決済日"])
+            else pd.Timestamp(row["決済日"]).strftime("%Y-%m-%d")
+        )
+        new_is_nisa = bool(row["NISA"])
 
         if (
             row["購入株価"] != trade["entry_price"]
             or new_exit_price != trade["exit_price"]
             or row["株数"] != trade["quantity"]
             or new_timeframe != trade["timeframe"]
+            or new_trade_date != trade["trade_date"]
+            or new_exit_date != trade.get("exit_date")
+            or new_is_nisa != trade.get("is_nisa", False)
         ):
             update_trade(
                 trade["id"],
@@ -1014,6 +1395,9 @@ def _render_trade_table(trades_subset, key_suffix):
                 exit_price=new_exit_price,
                 quantity=int(row["株数"]),
                 timeframe=new_timeframe,
+                trade_date=new_trade_date,
+                is_nisa=new_is_nisa,
+                exit_date=new_exit_date,
             )
             st.rerun()
 
@@ -1057,16 +1441,25 @@ def _render_trades_section():
 
     st.markdown("#### 決算済み")
     if closed_trades:
+        st.caption(
+            "損益は税引後（特定口座・源泉徴収ありを想定、譲渡益課税20.315%を"
+            "利益から差し引いた額）。決算済みの取引は編集できません。"
+            "修正する場合は対象銘柄を選択し「保有中に移動」してください。"
+        )
         groups = group_by_year_and_month(closed_trades)
 
         for year_index, (year, year_pnl, month_groups) in enumerate(groups):
             with st.expander(
-                f"{year}年（年間損益: {year_pnl:+,.0f}円）",
+                f"{year}年（年間損益（税引後）: {year_pnl:+,.0f}円）",
                 expanded=(year_index == 0),
             ):
                 for month, month_pnl, month_trades in month_groups:
-                    st.markdown(f"**{month}月　月間損益: {month_pnl:+,.0f}円**")
-                    _render_trade_table(month_trades, key_suffix=f"{year}_{month}")
+                    st.markdown(
+                        f"**{month}月　月間損益（税引後）: {month_pnl:+,.0f}円**"
+                    )
+                    _render_trade_table(
+                        month_trades, key_suffix=f"{year}_{month}", read_only=True
+                    )
     else:
         st.caption("決算済みの銘柄はまだありません。")
 
@@ -1087,7 +1480,7 @@ def _render_trades_section():
             )
             st.divider()
 
-    st.metric("全期間の損益合計", f"{total_pnl(trades):+,.0f}円")
+    st.metric("全期間の損益合計（税引後）", f"{total_pnl(trades):+,.0f}円")
 
     st.divider()
 
@@ -1109,8 +1502,8 @@ def _render_trades_section():
             "選択した取引を保有中に移動",
             key="move_to_open_trade_button",
             use_container_width=True,
-            help="決算株価の入力を誤った場合の修正用。決算株価をクリアし、"
-            "保有中に戻します",
+            help="決算株価の入力を誤った場合の修正用。決算株価と決済日を"
+            "クリアし、保有中に戻します",
         ):
             update_trade(
                 focus_trade["id"],
@@ -1118,6 +1511,9 @@ def _render_trades_section():
                 exit_price=None,
                 quantity=focus_trade["quantity"],
                 timeframe=focus_trade["timeframe"],
+                trade_date=focus_trade["trade_date"],
+                is_nisa=focus_trade.get("is_nisa", False),
+                exit_date=None,
             )
             st.session_state["trades_chart_focus_id"] = None
             st.rerun()
@@ -1157,11 +1553,87 @@ def _render_trades_section():
             st.rerun()
 
 
+def _render_watchlist_table(stocks_subset, key_suffix):
+
+    """
+    監視銘柄一覧を1つのdata_editorで描画する（優先監視銘柄セクション・
+    監視銘柄セクション、両方から呼ぶ共通処理）
+
+    「表示」チェックボックスによるチャート選択、時間足の編集をここで行う。
+    session_state["watchlist_chart_focus_id"]はタブ全体で1つだけなので、
+    どちらのセクションで選択してもチャートは1箇所（focus_slot）に表示される
+    """
+
+    current_focus_id = st.session_state.get("watchlist_chart_focus_id")
+
+    watchlist_display_df = pd.DataFrame(
+        [
+            {
+                "表示": w["id"] == current_focus_id,
+                "コード": w["code"],
+                "銘柄名": w["company_name"],
+                "方向": DIRECTION_LABELS[w["direction"]],
+                "時間足": TIMEFRAME_LABELS[w["timeframe"]],
+                "追加日": w["added_date"],
+            }
+            for w in stocks_subset
+        ],
+        index=[w["id"] for w in stocks_subset],
+    )
+
+    edited_watchlist_df = st.data_editor(
+        watchlist_display_df,
+        # keyにcurrent_focus_idを含める理由は_render_trade_tableのコメント参照
+        key=f"watchlist_editor_{key_suffix}_{current_focus_id}",
+        use_container_width=True,
+        disabled=["コード", "銘柄名", "方向", "追加日"],
+        column_config={
+            "表示": st.column_config.CheckboxColumn(
+                help="チェックした銘柄のチャートを上に表示します"
+            ),
+            "時間足": st.column_config.SelectboxColumn(
+                options=list(TIMEFRAME_LABELS.values()),
+                help="日足/週足を間違えて登録した場合はここで修正できます",
+            ),
+        },
+    )
+
+    subset_ids = [w["id"] for w in stocks_subset]
+    newly_checked_ids = [
+        wid for wid in subset_ids
+        if bool(edited_watchlist_df.loc[wid, "表示"]) and wid != current_focus_id
+    ]
+
+    if newly_checked_ids:
+        st.session_state["watchlist_chart_focus_id"] = newly_checked_ids[0]
+        st.session_state["scroll_to_chart"] = True
+        st.rerun()
+    elif (
+        current_focus_id in subset_ids
+        and not bool(edited_watchlist_df.loc[current_focus_id, "表示"])
+    ):
+        st.session_state["watchlist_chart_focus_id"] = None
+        st.rerun()
+
+    for stock in stocks_subset:
+        new_timeframe = TIMEFRAME_LABELS_INVERSE[
+            edited_watchlist_df.loc[stock["id"], "時間足"]
+        ]
+
+        if new_timeframe != stock["timeframe"]:
+            update_watchlist_timeframe(stock["id"], new_timeframe)
+            st.rerun()
+
+
 def _render_watchlist_section():
 
     """
     監視銘柄タブを描画する（_render_trades_sectionと同様、日足/週足は
     「時間足」列で見分けるだけで表・削除・移動は一括で扱う）。
+
+    優先監視銘柄・監視銘柄の2セクションに分けて表示する（優先監視銘柄が
+    上）。振り分けは監視銘柄タブに追加した後、選択した銘柄を対象に
+    ボタンで行う（どちらからどちらへも移動可能）
 
     銘柄の選択は表内の「表示」チェックボックス列で行い、チャートは表より
     上（focus_slot）に表示する。session_state["watchlist_chart_focus_id"]で
@@ -1179,64 +1651,20 @@ def _render_watchlist_section():
 
     focus_slot = st.container()
 
-    current_focus_id = st.session_state.get("watchlist_chart_focus_id")
+    priority_stocks = [w for w in watchlist_stocks if w["priority"]]
+    normal_stocks = [w for w in watchlist_stocks if not w["priority"]]
 
-    watchlist_display_df = pd.DataFrame(
-        [
-            {
-                "表示": w["id"] == current_focus_id,
-                "コード": w["code"],
-                "銘柄名": w["company_name"],
-                "方向": DIRECTION_LABELS[w["direction"]],
-                "時間足": TIMEFRAME_LABELS[w["timeframe"]],
-                "追加日": w["added_date"],
-            }
-            for w in watchlist_stocks
-        ],
-        index=[w["id"] for w in watchlist_stocks],
-    )
+    st.markdown("#### 優先監視銘柄")
+    if priority_stocks:
+        _render_watchlist_table(priority_stocks, key_suffix="priority")
+    else:
+        st.caption("優先監視銘柄はまだありません。")
 
-    edited_watchlist_df = st.data_editor(
-        watchlist_display_df,
-        # keyにcurrent_focus_idを含める理由は_render_trades_sectionのコメント参照
-        key=f"watchlist_editor_{current_focus_id}",
-        use_container_width=True,
-        disabled=["コード", "銘柄名", "方向", "追加日"],
-        column_config={
-            "表示": st.column_config.CheckboxColumn(
-                help="チェックした銘柄のチャートを上に表示します"
-            ),
-            "時間足": st.column_config.SelectboxColumn(
-                options=list(TIMEFRAME_LABELS.values()),
-                help="日足/週足を間違えて登録した場合はここで修正できます",
-            ),
-        },
-    )
-
-    all_ids = [w["id"] for w in watchlist_stocks]
-    newly_checked_ids = [
-        wid for wid in all_ids
-        if bool(edited_watchlist_df.loc[wid, "表示"]) and wid != current_focus_id
-    ]
-
-    if newly_checked_ids:
-        st.session_state["watchlist_chart_focus_id"] = newly_checked_ids[0]
-        st.rerun()
-    elif (
-        current_focus_id in all_ids
-        and not bool(edited_watchlist_df.loc[current_focus_id, "表示"])
-    ):
-        st.session_state["watchlist_chart_focus_id"] = None
-        st.rerun()
-
-    for stock in watchlist_stocks:
-        new_timeframe = TIMEFRAME_LABELS_INVERSE[
-            edited_watchlist_df.loc[stock["id"], "時間足"]
-        ]
-
-        if new_timeframe != stock["timeframe"]:
-            update_watchlist_timeframe(stock["id"], new_timeframe)
-            st.rerun()
+    st.markdown("#### 監視銘柄")
+    if normal_stocks:
+        _render_watchlist_table(normal_stocks, key_suffix="normal")
+    else:
+        st.caption("監視銘柄はまだありません。")
 
     focus_id = st.session_state.get("watchlist_chart_focus_id")
     focus_stock = next((w for w in watchlist_stocks if w["id"] == focus_id), None)
@@ -1267,6 +1695,25 @@ def _render_watchlist_section():
         st.session_state["watchlist_chart_focus_id"] = None
         st.rerun()
 
+    if focus_stock["priority"]:
+        if st.button(
+            "選択した監視銘柄を優先から外す",
+            key="toggle_watchlist_priority_button",
+            use_container_width=True,
+            help="優先監視銘柄から通常の監視銘柄に戻します",
+        ):
+            update_watchlist_priority(focus_stock["id"], False)
+            st.rerun()
+    else:
+        if st.button(
+            "選択した監視銘柄を優先監視銘柄に追加",
+            key="toggle_watchlist_priority_button",
+            use_container_width=True,
+            help="優先監視銘柄セクションに移動します",
+        ):
+            update_watchlist_priority(focus_stock["id"], True)
+            st.rerun()
+
     st.markdown("##### 選択した監視銘柄を売買銘柄に移動")
 
     with st.form("move_watchlist_to_trade_form"):
@@ -1282,6 +1729,10 @@ def _render_watchlist_section():
             min_value=0.0,
             value=0.0,
         )
+        move_exit_date_input = st.date_input(
+            "決済日（決算株価を入力した場合のみ）", value=date.today()
+        )
+        move_is_nisa_input = st.checkbox("NISA枠（非課税）")
 
         if st.form_submit_button("売買銘柄に移動"):
             add_trade(
@@ -1295,6 +1746,10 @@ def _render_watchlist_section():
                     move_exit_price_input if move_exit_price_input > 0 else None
                 ),
                 quantity=int(move_quantity_input),
+                is_nisa=move_is_nisa_input,
+                exit_date=(
+                    str(move_exit_date_input) if move_exit_price_input > 0 else None
+                ),
             )
             delete_watchlist_stock(focus_stock["id"])
             st.session_state["watchlist_chart_focus_id"] = None

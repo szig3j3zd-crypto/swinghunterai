@@ -46,16 +46,38 @@ def create_table():
         # sqlite3はOperationalError、libsql（Turso接続時）はValueErrorを送出する
         pass
 
+    # 既存DB（is_nisa列がまだ無いテーブル）への追加マイグレーション。
+    # NISA口座での取引かどうか（0=特定口座/課税、1=NISA/非課税）。
+    # 損益計算（service.trade_service.calculate_pnl）で譲渡益課税を
+    # 適用するかどうかの判定に使う
+    try:
+        cursor.execute(
+            "ALTER TABLE trades ADD COLUMN is_nisa INTEGER DEFAULT 0"
+        )
+    except (sqlite3.OperationalError, ValueError):
+        pass
+
+    # 既存DB（exit_date列がまだ無いテーブル）への追加マイグレーション。
+    # 決済日（決算株価を入力した実際の決済日）。未決済ならNULL
+    try:
+        cursor.execute(
+            "ALTER TABLE trades ADD COLUMN exit_date TEXT"
+        )
+    except (sqlite3.OperationalError, ValueError):
+        pass
+
     conn.commit()
     conn.close()
 
 
 def add_trade(code, company_name, direction, timeframe, trade_date,
-              entry_price, exit_price, quantity):
+              entry_price, exit_price, quantity, is_nisa=False, exit_date=None):
     """
     売買銘柄を1件登録する
 
-    exit_priceはNoneなら未決済（損益は集計対象外）として扱う
+    exit_priceはNoneなら未決済（損益は集計対象外）として扱う。
+    is_nisaはNISA口座での取引かどうか（Trueなら損益計算で非課税扱い）。
+    exit_dateは決済日（決算株価が無ければNoneのまま）
     """
 
     conn = create_connection()
@@ -74,9 +96,11 @@ def add_trade(code, company_name, direction, timeframe, trade_date,
             entry_price,
             exit_price,
             quantity,
+            is_nisa,
+            exit_date,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             code,
@@ -86,7 +110,9 @@ def add_trade(code, company_name, direction, timeframe, trade_date,
             trade_date,
             entry_price,
             exit_price,
-            quantity
+            quantity,
+            1 if is_nisa else 0,
+            exit_date
         )
     )
 
@@ -94,10 +120,11 @@ def add_trade(code, company_name, direction, timeframe, trade_date,
     conn.close()
 
 
-def update_trade(trade_id, entry_price, exit_price, quantity, timeframe):
+def update_trade(trade_id, entry_price, exit_price, quantity, timeframe,
+                  trade_date, is_nisa=False, exit_date=None):
     """
-    売買銘柄の価格・株数・時間足を更新する
-    （決済価格の後入力、日足/週足の登録間違いの修正など）
+    売買銘柄の価格・株数・時間足・取引日・NISA区分・決済日を更新する
+    （決済価格の後入力、登録間違いの修正など）
     """
 
     conn = create_connection()
@@ -107,7 +134,8 @@ def update_trade(trade_id, entry_price, exit_price, quantity, timeframe):
     cursor.execute(
         """
         UPDATE trades
-        SET entry_price = ?, exit_price = ?, quantity = ?, timeframe = ?
+        SET entry_price = ?, exit_price = ?, quantity = ?, timeframe = ?,
+            trade_date = ?, is_nisa = ?, exit_date = ?
         WHERE id = ?
         """,
         (
@@ -115,6 +143,9 @@ def update_trade(trade_id, entry_price, exit_price, quantity, timeframe):
             exit_price,
             quantity,
             timeframe,
+            trade_date,
+            1 if is_nisa else 0,
+            exit_date,
             trade_id
         )
     )
@@ -199,7 +230,12 @@ def get_all_trades():
     -------
     trades
         dictのリスト（id, code, company_name, direction, timeframe,
-        trade_date, entry_price, exit_price, quantity）。trade_date降順
+        trade_date, entry_price, exit_price, quantity, is_nisa, exit_date）。
+        trade_date昇順（古い順。新しく追加した銘柄が下に来るようにするため。
+        2026-08-25改訂。以前は降順だった）。is_nisaはbool
+        （NISA口座での取引かどうか。2026-08-26追加。損益計算で非課税扱いに
+        するかの判定に使う）。exit_dateは決済日の文字列またはNone
+        （2026-08-26追加）
     """
 
     conn = create_connection()
@@ -217,9 +253,11 @@ def get_all_trades():
             trade_date,
             entry_price,
             exit_price,
-            quantity
+            quantity,
+            is_nisa,
+            exit_date
         FROM trades
-        ORDER BY trade_date DESC, id DESC
+        ORDER BY trade_date ASC, id ASC
         """
     )
 
@@ -233,10 +271,17 @@ def get_all_trades():
         "entry_price",
         "exit_price",
         "quantity",
+        "is_nisa",
+        "exit_date",
     ]
+
+    def _to_dict(row):
+        trade = dict(zip(columns, row))
+        trade["is_nisa"] = bool(trade["is_nisa"])
+        return trade
 
     rows = cursor.fetchall()
 
     conn.close()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [_to_dict(row) for row in rows]

@@ -9,7 +9,7 @@ from database.watchlist_repository import get_watchlist_codes
 from indicators.moving_average import calculate_moving_average
 from indicators.resample import resample_to_monthly, resample_to_weekly
 from indicators.volume import calculate_volume_indicators
-from rules.entry_rule import evaluate_entry
+from rules.entry_rule import evaluate_entry, evaluate_ma_cross_watch, evaluate_ma_order_watch
 from rules.screening_filters import (
     market_cap_filter_is_active,
     passes_market_cap_filter,
@@ -29,6 +29,7 @@ MODULE_LABELS = {
     "bounce": "反発",
     "parallel_rise": "並走上昇",
     "half_signal": "半分シグナル",
+    "ma_cross_watch": "MA60/100接近（監視のみ）",
 }
 
 # ショート方向では表裏の関係になるモジュールのみ、表示ラベルを上書きする
@@ -38,6 +39,38 @@ MODULE_LABELS_SHORT_OVERRIDE = {
     "perfect_golden_cross": "完全デッドクロス",
     "parallel_rise": "並走下降",
 }
+
+# 監視銘柄候補に関与するモジュールと、対応するis_*_candidateキーの対応表
+# （entry_signal_spec.md 6章・14章・15章）。get_today_scan_results()で、
+# 選択中のこれらのモジュールをAND結合して監視銘柄候補を判定するのに使う
+WATCH_MODULE_FLAGS = {
+    "bounce": "is_watch_candidate",
+    "ma_cross_watch": "is_cross_watch_candidate",
+    "ma_order": "is_order_watch_candidate",
+}
+
+
+def _is_merged_watch_candidate(result, modules):
+
+    """
+    監視銘柄候補かどうかを、選択中の監視系モジュール（反発・MA60/100接近・
+    並び順）についてAND結合で判定する（候補一覧のエントリー候補判定と同じ
+    「選択した基準をすべて満たす」考え方を監視銘柄候補にも適用する。
+    2026-08-23改訂。旧仕様は選択中の監視系モジュールのいずれか1つでも
+    満たせば監視銘柄候補にしていたが、「全て満たす銘柄に絞ってほしい」との
+    要望を受けてAND結合に変更した）
+
+    監視系モジュールを1つも選択していない場合は常にFalse（候補一覧と違い、
+    「監視系モジュール未選択なら無条件で監視銘柄候補」という状態は無い）
+    """
+
+    active_flags = [
+        result.get(flag_key, False)
+        for module_name, flag_key in WATCH_MODULE_FLAGS.items()
+        if module_name in modules
+    ]
+
+    return bool(active_flags) and all(active_flags)
 
 
 def _module_label(name, direction):
@@ -133,12 +166,20 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
     modules
         使用するモジュール名のリスト。Noneならconfig既定値
         （DEFAULT_MODULES = 並び順のみ）を使う。
-        entry_signal_spec.mdの各モジュール定義を参照。監視銘柄候補は
-        entry_signal_spec.md 6章の反発モジュールでのみ発生するため、
-        "bounce"モジュールを含まないmodulesを指定した場合、"watchlist"は
-        常に空リストになる。空リスト[]を明示的に渡した場合はRule Engineでの
-        判定を行わず、出来高・株価フィルタを通過した銘柄をそのまま
-        "candidates"に含める（no_modules_selected=True、score等は持たない）
+        entry_signal_spec.mdの各モジュール定義を参照。"watchlist"は、
+        entry_signal_spec.md 6章の反発モジュール・14章のMA60/100接近ウォッチ
+        モジュール・15章の並び順ウォッチ（ma_orderモジュール自体が持つ監視判定）
+        のうち、選択中のものを**すべて**満たす銘柄だけを含める
+        （service.screening_service.WATCH_MODULE_FLAGS・_is_merged_watch_candidate()
+        参照。候補一覧のエントリー候補判定と同じAND結合の考え方を監視銘柄候補にも
+        適用している。2026-08-23改訂。旧仕様はいずれか1つ満たせば含めるOR結合
+        だった）。"bounce"・"ma_cross_watch"・"ma_order"のいずれも含まない
+        modulesを指定した場合は常に空リストになる。ma_cross_watchはエントリー
+        候補判定には一切関与しない（監視専用）。ma_orderの監視判定は、ma_order
+        自体のエントリー候補判定（AND結合）には影響しない（並び順のバリエーション
+        =ma_modeは共用する）。空リスト[]を明示的に渡した場合はRule Engineでの
+        判定を行わず、出来高・株価フィルタを通過した銘柄をそのまま"candidates"に
+        含める（no_modules_selected=True、score等は持たない）
 
     ma_mode
         "ma_order"選択時の並び順バリエーション。"full"（デフォルト）、"two_line"、
@@ -156,11 +197,18 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
     Returns
     -------
     result
-        "candidates"（スコア降順の候補リスト）・"watchlist"（監視銘柄候補
-        リスト）のキーを持つdict。各要素はcode, company_name と
-        evaluate_entry() の戻り値を含む。どちらも、既に保有中（未決済）の
-        売買銘柄・監視銘柄として登録済みの銘柄コードを除外する（方向は
-        問わない。決算済みのトレードは除外しない）
+        "candidates"（スコア降順の候補リスト）・"watchlist"（反発・MA60/100接近
+        ウォッチ・並び順ウォッチのうち選択中のものをすべて満たした監視銘柄候補
+        リスト）のキーを持つdict。各要素はcode, company_name と evaluate_entry()
+        の戻り値を含む。watchlistの各要素は、選択中の監視系モジュールに対応する
+        is_watch_candidate・is_cross_watch_candidate・is_order_watch_candidateが
+        すべてTrueになっている（選択していないモジュールのキーはFalseのまま）。
+        いずれも既に保有中（未決済）の売買銘柄コードは除外する（方向は問わない。
+        決算済みのトレードは除外しない）。既に監視銘柄として登録済みの銘柄は
+        "candidates"・"watchlist"のどちらからも除外せず含め、各要素の
+        is_already_watchlisted（bool）で区別できるようにする（2026-08-23改訂。
+        以前はcandidatesから除外していた。呼び出し側のUIでグレー表示・
+        選択不可にする用途）
     """
 
     if stocks is None:
@@ -217,7 +265,13 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
                     "timeframe": timeframe,
                     **result,
                 })
-            elif result.get("is_watch_candidate"):
+            elif _is_merged_watch_candidate(result, modules):
+                # 反発・MA60/100接近ウォッチ・並び順ウォッチは判定ロジックこそ別物だが、
+                # UI上は「エントリー候補にはまだ届かないが監視する価値がある状態」という
+                # 位置づけが同じなため、1つのwatchlistにまとめる。選択中の監視系
+                # モジュールをすべて満たす銘柄だけを含める（_is_merged_watch_candidate
+                # 参照）。複数の監視条件を同時に満たすため、含まれる項目は対応する
+                # is_*_candidateがすべてTrueになる（呼び出し側で理由をすべて表示する）
                 watchlist.append({
                     "code": code,
                     "company_name": company_name,
@@ -228,12 +282,24 @@ def get_today_scan_results(direction="long", stocks=None, min_history=100,
         except Exception:
             continue
 
-    # 既に保有中（未決済）の売買銘柄、または監視銘柄として登録済みの銘柄は
-    # 候補一覧・監視銘柄候補一覧のどちらからも除外する
-    # （決算済みのトレードは対象外。方向は問わない）
-    excluded_codes = get_open_trade_codes() | get_watchlist_codes()
-    candidates = [c for c in candidates if c["code"] not in excluded_codes]
-    watchlist = [w for w in watchlist if w["code"] not in excluded_codes]
+    open_trade_codes = get_open_trade_codes()
+    already_watchlisted_codes = get_watchlist_codes()
+
+    # 候補一覧・監視銘柄候補一覧はどちらも、既に保有中（未決済）の売買銘柄の
+    # 銘柄コードのみ除外する（決算済みのトレードは対象外。方向は問わない）。
+    # 既に監視銘柄として登録済みの銘柄は、候補一覧・監視銘柄候補一覧どちらからも
+    # 除外せず含める（2026-08-23改訂。以前はどちらからも除外していたが、
+    # 「既に監視銘柄に入っている銘柄も候補として見たい」との要望を受けて
+    # 変更した）。is_already_watchlistedフラグを立て、呼び出し側（UI）で
+    # グレー表示・選択不可にできるようにする
+    candidates = [c for c in candidates if c["code"] not in open_trade_codes]
+    watchlist = [w for w in watchlist if w["code"] not in open_trade_codes]
+
+    for candidate in candidates:
+        candidate["is_already_watchlisted"] = candidate["code"] in already_watchlisted_codes
+
+    for watch_item in watchlist:
+        watch_item["is_already_watchlisted"] = watch_item["code"] in already_watchlisted_codes
 
     candidates = _filter_by_market_cap(
         candidates, ticker_by_code, min_market_cap, max_market_cap
@@ -274,11 +340,17 @@ def get_today_watchlist(direction="long", stocks=None, min_history=100,
                          min_volume=None, min_price=None, max_price=None):
 
     """
-    今日の監視銘柄候補（反発モジュールの「反発の一歩手前」の銘柄）を抽出する
+    今日の監視銘柄候補を抽出する
 
-    entry_signal_spec.md 6章の反発モジュールでのみ発生する
-    （MA20を割らずに接近中で反転前の銘柄、MA20を割ってから回復待ちの銘柄の両方を含む）。
-    "bounce"モジュールを含まないmodulesを指定した場合は常に空リストを返す。
+    反発モジュール（entry_signal_spec.md 6章、「反発の一歩手前」）・
+    MA60/100接近ウォッチモジュール（entry_signal_spec.md 14章）・並び順
+    ウォッチ（entry_signal_spec.md 15章、ma_orderモジュール自体が持つ監視判定）
+    のうち、選択中のものをすべて満たす銘柄だけを返す（判定ロジックは別物だが、
+    UI上は1つの監視銘柄候補リストとして扱う。候補一覧のエントリー候補判定と
+    同じAND結合の考え方）。"bounce"・"ma_cross_watch"・"ma_order"のいずれも
+    含まないmodulesを指定した場合は常に空リストを返す。候補一覧と異なり、
+    既に監視銘柄として登録済みの銘柄も除外せず含める（is_already_watchlisted
+    で区別できる）。既に保有中（未決済）の売買銘柄のみ除外する
 
     候補（get_today_candidates）も同時に必要な場合は、全銘柄スキャンが2回
     走ってしまうのを避けるためget_today_scan_results()を使うこと
@@ -453,7 +525,7 @@ def _evaluate_stock(code, direction, timeframe, min_history, modules, ma_mode,
     df = calculate_moving_average(df)
     df = calculate_volume_indicators(df)
 
-    return evaluate_entry(
+    result = evaluate_entry(
         df,
         direction,
         modules=modules,
@@ -462,6 +534,33 @@ def _evaluate_stock(code, direction, timeframe, min_history, modules, ma_mode,
         min_price=min_price,
         max_price=max_price,
     )
+
+    # MA60/100接近ウォッチ（entry_signal_spec.md 14章）はエントリー候補判定に
+    # 関与しない監視専用モジュールのため、evaluate_entry()のAND結合とは別に判定する。
+    # 反発モジュールの監視理由（"reason"）とは別キー（"cross_watch_reason"）に
+    # 持たせる。両モジュールを同時選択した場合、同じ銘柄が反発・MA60/100接近
+    # 両方の監視銘柄候補リストに独立して現れうるため、"reason"を上書きすると
+    # 反発側の表示が誤って書き換わってしまう
+    result["is_cross_watch_candidate"] = False
+    result["cross_watch_reason"] = None
+
+    if "ma_cross_watch" in modules and not result["is_entry_candidate"]:
+        cross_watch_result = evaluate_ma_cross_watch(df, direction)
+        result["is_cross_watch_candidate"] = cross_watch_result["is_cross_watch_candidate"]
+        result["cross_watch_reason"] = cross_watch_result["reason"]
+
+    # 並び順ウォッチ（entry_signal_spec.md 15章）も同様に、並び順（ma_order）
+    # モジュール自体のエントリー候補判定（AND結合）には影響しない別キーで持たせる。
+    # 並び順のバリエーション（ma_mode）はエントリー候補判定と同じ設定を共用する
+    result["is_order_watch_candidate"] = False
+    result["order_watch_reason"] = None
+
+    if "ma_order" in modules and not result["is_entry_candidate"]:
+        order_watch_result = evaluate_ma_order_watch(df, direction, ma_mode)
+        result["is_order_watch_candidate"] = order_watch_result["is_order_watch_candidate"]
+        result["order_watch_reason"] = order_watch_result["reason"]
+
+    return result
 
 
 def _filter_by_market_cap(candidates, ticker_by_code, min_market_cap, max_market_cap):

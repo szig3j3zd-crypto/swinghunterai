@@ -33,6 +33,8 @@ def test_add_update_delete_trade_roundtrip():
         assert added["entry_price"] == 1000
         assert added["exit_price"] is None
         assert added["quantity"] == 100
+        assert added["is_nisa"] is False
+        assert added["exit_date"] is None
 
         update_trade(
             added["id"],
@@ -40,6 +42,9 @@ def test_add_update_delete_trade_roundtrip():
             exit_price=1200,
             quantity=200,
             timeframe="weekly",
+            trade_date="2000-01-02",
+            is_nisa=True,
+            exit_date="2000-02-01",
         )
 
         updated = next(t for t in get_all_trades() if t["id"] == added["id"])
@@ -48,6 +53,9 @@ def test_add_update_delete_trade_roundtrip():
         assert updated["exit_price"] == 1200
         assert updated["quantity"] == 200
         assert updated["timeframe"] == "weekly"
+        assert updated["trade_date"] == "2000-01-02"
+        assert updated["is_nisa"] is True
+        assert updated["exit_date"] == "2000-02-01"
 
     finally:
         delete_trade(added["id"])

@@ -14,6 +14,7 @@ from database.watchlist_repository import (
     delete_watchlist_stocks_by_code,
 )
 from service.screening_service import (
+    _is_merged_watch_candidate,
     evaluate_single_stock,
     format_reason,
     get_large_cap_stocks,
@@ -67,25 +68,134 @@ def test_candidates_are_sorted_by_score_descending():
 def test_get_today_watchlist_runs_on_a_small_universe():
     stocks = get_active_stocks().head(3)
 
+    # "ma_order"は含めない（ma_order自体も監視銘柄候補を出すようになったため、
+    # 含めるとis_watch_candidateがFalseの項目も混ざりうる。ここではbounce単体の
+    # 挙動だけを確認したい）
     watchlist = get_today_watchlist(
-        direction="long", stocks=stocks, modules=["ma_order", "bounce"],
+        direction="long", stocks=stocks, modules=["bounce"],
     )
 
     assert isinstance(watchlist, list)
 
     for watch_item in watchlist:
         assert watch_item["is_watch_candidate"] is True
+        assert watch_item["is_cross_watch_candidate"] is False
+        assert watch_item["is_order_watch_candidate"] is False
         assert watch_item["is_entry_candidate"] is False
         assert "code" in watch_item
         assert "company_name" in watch_item
 
 
-def test_get_today_watchlist_is_always_empty_without_bounce_module():
+def test_get_today_watchlist_is_always_empty_without_any_watch_module():
+    # bounce・ma_cross_watch・ma_orderのいずれも含まない場合は常に空リスト
+    # （perfect_golden_crossはエントリー候補判定のみに関与し、監視の役割を持たない）
     stocks = get_active_stocks().head(3)
 
-    watchlist = get_today_watchlist(direction="long", stocks=stocks, modules=["ma_order"])
+    watchlist = get_today_watchlist(
+        direction="long", stocks=stocks, modules=["perfect_golden_cross"],
+    )
 
     assert watchlist == []
+
+
+def test_get_today_watchlist_runs_with_ma_cross_watch_module():
+    stocks = get_active_stocks().head(3)
+
+    watchlist = get_today_watchlist(
+        direction="long", stocks=stocks, modules=["ma_cross_watch"],
+    )
+
+    assert isinstance(watchlist, list)
+
+    for watch_item in watchlist:
+        assert watch_item["is_cross_watch_candidate"] is True
+        assert watch_item["is_watch_candidate"] is False
+        assert watch_item["is_order_watch_candidate"] is False
+        assert watch_item["is_entry_candidate"] is False
+        assert "code" in watch_item
+        assert "company_name" in watch_item
+
+
+def test_get_today_watchlist_runs_with_ma_order_module():
+    # 並び順ウォッチ（entry_signal_spec.md 15章）: "ma_order"のみを選択しても、
+    # ma_order自体が監視銘柄候補を出せる
+    stocks = get_active_stocks().head(3)
+
+    watchlist = get_today_watchlist(
+        direction="long", stocks=stocks, modules=["ma_order"], ma_mode="full",
+    )
+
+    assert isinstance(watchlist, list)
+
+    for watch_item in watchlist:
+        assert watch_item["is_order_watch_candidate"] is True
+        assert watch_item["is_watch_candidate"] is False
+        assert watch_item["is_cross_watch_candidate"] is False
+        assert watch_item["is_entry_candidate"] is False
+        assert "code" in watch_item
+        assert "company_name" in watch_item
+
+
+def test_is_merged_watch_candidate_single_module_matches_that_flag():
+    result = {
+        "is_watch_candidate": True,
+        "is_cross_watch_candidate": False,
+        "is_order_watch_candidate": False,
+    }
+
+    assert _is_merged_watch_candidate(result, ["bounce"]) is True
+    assert _is_merged_watch_candidate(result, ["ma_cross_watch"]) is False
+    assert _is_merged_watch_candidate(result, ["ma_order"]) is False
+
+
+def test_is_merged_watch_candidate_requires_all_selected_modules():
+    # 2つ選択している場合、片方だけTrueではFalse（AND結合）
+    partial = {
+        "is_watch_candidate": True,
+        "is_cross_watch_candidate": False,
+        "is_order_watch_candidate": False,
+    }
+    both = {
+        "is_watch_candidate": True,
+        "is_cross_watch_candidate": True,
+        "is_order_watch_candidate": False,
+    }
+
+    assert _is_merged_watch_candidate(partial, ["bounce", "ma_cross_watch"]) is False
+    assert _is_merged_watch_candidate(both, ["bounce", "ma_cross_watch"]) is True
+
+
+def test_is_merged_watch_candidate_false_when_no_watch_module_selected():
+    # 監視系モジュール（bounce・ma_cross_watch・ma_order）を1つも選択していない
+    # 場合は、全部Trueが渡されても常にFalse（候補一覧と違い無条件Trueにはしない）
+    result = {
+        "is_watch_candidate": True,
+        "is_cross_watch_candidate": True,
+        "is_order_watch_candidate": True,
+    }
+
+    assert _is_merged_watch_candidate(result, ["perfect_golden_cross"]) is False
+    assert _is_merged_watch_candidate(result, []) is False
+
+
+def test_get_today_watchlist_merges_bounce_cross_watch_and_order_watch_modules():
+    # 反発・MA60/100接近ウォッチ・並び順ウォッチを同時選択した場合、1つの
+    # watchlistにまとめて含まれるが、選択したものをすべて満たす銘柄だけに
+    # 絞り込まれる（AND結合、2026-08-23改訂。以前はいずれか1つでも該当すれば
+    # 含めるOR結合だった）
+    stocks = get_active_stocks().head(300)
+
+    watchlist = get_today_watchlist(
+        direction="long", stocks=stocks, modules=["ma_order", "bounce", "ma_cross_watch"],
+    )
+
+    assert isinstance(watchlist, list)
+
+    for watch_item in watchlist:
+        assert watch_item["is_watch_candidate"] is True
+        assert watch_item["is_cross_watch_candidate"] is True
+        assert watch_item["is_order_watch_candidate"] is True
+        assert watch_item["is_entry_candidate"] is False
 
 
 def test_get_today_scan_results_excludes_open_trade_codes():
@@ -138,7 +248,10 @@ def test_get_today_scan_results_does_not_exclude_closed_trade_codes():
                 delete_trade(trade["id"])
 
 
-def test_get_today_scan_results_excludes_watchlist_codes():
+def test_get_today_scan_results_flags_watchlist_codes_in_candidates():
+    # 候補一覧は既に監視銘柄として登録済みの銘柄を除外しない（2026-08-23改訂。
+    # 以前は除外していたが、「候補一覧も監視銘柄登録済みの銘柄を表示してほしい」
+    # との要望を受けて変更した）。is_already_watchlisted=Trueで区別できる
     create_watchlist_table()
 
     stocks = get_active_stocks().head(5)
@@ -156,7 +269,9 @@ def test_get_today_scan_results_excludes_watchlist_codes():
             min_volume=0, min_price=0, max_price=float("inf"), min_market_cap=0,
         )
 
-        assert code not in [c["code"] for c in result["candidates"]]
+        matching = [c for c in result["candidates"] if c["code"] == code]
+        assert len(matching) == 1
+        assert matching[0]["is_already_watchlisted"] is True
     finally:
         delete_watchlist_stocks_by_code(code)
 
@@ -180,8 +295,13 @@ def test_get_today_scan_results_excludes_open_trade_codes_from_watchlist(monkeyp
     monkeypatch.setattr("service.screening_service._evaluate_stock", fake_evaluate_stock)
 
     try:
+        # modulesは"bounce"のみ（fake_evaluate_stockが返すis_watch_candidateに
+        # 対応するモジュールだけ）にする。"ma_order"も含めると、AND結合
+        # （_is_merged_watch_candidate）でis_order_watch_candidateも要求され、
+        # fakeの戻り値には無いため、除外ロジックを検証する前に候補から
+        # 外れてしまう
         result = get_today_scan_results(
-            direction="long", stocks=stocks, modules=["ma_order", "bounce"],
+            direction="long", stocks=stocks, modules=["bounce"],
             min_market_cap=0,
         )
 
@@ -192,7 +312,10 @@ def test_get_today_scan_results_excludes_open_trade_codes_from_watchlist(monkeyp
                 delete_trade(trade["id"])
 
 
-def test_get_today_scan_results_excludes_watchlist_codes_from_watchlist(monkeypatch):
+def test_get_today_scan_results_includes_watchlist_codes_in_watchlist_flagged(monkeypatch):
+    # 候補一覧と異なり、監視銘柄候補一覧は既に監視銘柄として登録済みの銘柄を
+    # 除外しない（2026-08-23改訂）。代わりにis_already_watchlisted=Trueを
+    # 立てて、呼び出し側（UI）でグレー表示・選択不可にできるようにする
     create_watchlist_table()
 
     stocks = get_active_stocks().head(3)
@@ -212,13 +335,34 @@ def test_get_today_scan_results_excludes_watchlist_codes_from_watchlist(monkeypa
 
     try:
         result = get_today_scan_results(
-            direction="long", stocks=stocks, modules=["ma_order", "bounce"],
+            direction="long", stocks=stocks, modules=["bounce"],
             min_market_cap=0,
         )
 
-        assert code not in [w["code"] for w in result["watchlist"]]
+        matching = [w for w in result["watchlist"] if w["code"] == code]
+        assert len(matching) == 1
+        assert matching[0]["is_already_watchlisted"] is True
     finally:
         delete_watchlist_stocks_by_code(code)
+
+
+def test_get_today_scan_results_watchlist_flags_other_codes_as_not_already_watchlisted(monkeypatch):
+    create_watchlist_table()
+
+    stocks = get_active_stocks().head(3)
+
+    def fake_evaluate_stock(code, direction, timeframe, min_history, modules,
+                            ma_mode, min_volume, min_price, max_price):
+        return {"is_entry_candidate": False, "is_watch_candidate": True}
+
+    monkeypatch.setattr("service.screening_service._evaluate_stock", fake_evaluate_stock)
+
+    result = get_today_scan_results(
+        direction="long", stocks=stocks, modules=["bounce"], min_market_cap=0,
+    )
+
+    assert len(result["watchlist"]) == len(stocks)
+    assert all(w["is_already_watchlisted"] is False for w in result["watchlist"])
 
 
 def test_get_today_scan_results_with_empty_modules_skips_judgment():
@@ -258,18 +402,19 @@ def test_get_today_scan_results_with_empty_modules_applies_price_filter():
 
 def test_get_today_scan_results_matches_separate_calls():
     stocks = get_active_stocks().head(10)
+    modules = ["ma_order", "bounce", "ma_cross_watch"]
 
     result = get_today_scan_results(
-        direction="long", stocks=stocks, modules=["ma_order", "bounce"], min_market_cap=0,
+        direction="long", stocks=stocks, modules=modules, min_market_cap=0,
     )
 
     assert set(result.keys()) == {"candidates", "watchlist"}
 
     expected_candidates = get_today_candidates(
-        direction="long", stocks=stocks, modules=["ma_order", "bounce"], min_market_cap=0,
+        direction="long", stocks=stocks, modules=modules, min_market_cap=0,
     )
     expected_watchlist = get_today_watchlist(
-        direction="long", stocks=stocks, modules=["ma_order", "bounce"],
+        direction="long", stocks=stocks, modules=modules,
     )
 
     assert [c["code"] for c in result["candidates"]] == [c["code"] for c in expected_candidates]
@@ -278,7 +423,12 @@ def test_get_today_scan_results_matches_separate_calls():
         == sorted(w["code"] for w in expected_watchlist)
     )
     assert all(c["is_entry_candidate"] for c in result["candidates"])
-    assert all(w["is_watch_candidate"] for w in result["watchlist"])
+    # modulesが3つとも選択されているため、watchlistの各要素は3つすべてを
+    # 満たしている（AND結合、2026-08-23改訂）
+    assert all(
+        w["is_watch_candidate"] and w["is_cross_watch_candidate"] and w["is_order_watch_candidate"]
+        for w in result["watchlist"]
+    )
 
 
 def test_evaluate_single_stock_returns_error_for_unknown_code():

@@ -41,6 +41,16 @@ def create_table():
         # sqlite3はOperationalError、libsql（Turso接続時）はValueErrorを送出する
         pass
 
+    # 既存DB（priority列がまだ無いテーブル）への追加マイグレーション。
+    # 優先監視銘柄かどうかのフラグ（0=通常、1=優先）。振り分けは監視銘柄
+    # タブに追加した後に行うため、デフォルトは0（通常）
+    try:
+        cursor.execute(
+            "ALTER TABLE watchlist ADD COLUMN priority INTEGER DEFAULT 0"
+        )
+    except (sqlite3.OperationalError, ValueError):
+        pass
+
     conn.commit()
     conn.close()
 
@@ -135,6 +145,24 @@ def update_watchlist_timeframe(watchlist_id, timeframe):
     conn.close()
 
 
+def update_watchlist_priority(watchlist_id, priority):
+    """
+    監視銘柄の優先フラグを更新する（優先監視銘柄⇔監視銘柄の振り分け用）
+    """
+
+    conn = create_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "UPDATE watchlist SET priority = ? WHERE id = ?",
+        (1 if priority else 0, watchlist_id)
+    )
+
+    conn.commit()
+    conn.close()
+
+
 def delete_watchlist_stock(watchlist_id):
     """
     監視銘柄を1件削除する
@@ -216,7 +244,10 @@ def get_all_watchlist_stocks():
     -------
     stocks
         dictのリスト（id, code, company_name, direction, timeframe,
-        added_date）。added_date降順
+        added_date, priority）。added_date昇順（古い順。新しく追加した銘柄が
+        下に来るようにするため。2026-08-25改訂。以前は降順だった）。
+        priorityは0/1の整数（1=優先監視銘柄）。優先/通常への振り分け自体は
+        呼び出し側（ui/dashboard.py）で行う
     """
 
     conn = create_connection()
@@ -231,13 +262,17 @@ def get_all_watchlist_stocks():
             company_name,
             direction,
             timeframe,
-            added_date
+            added_date,
+            priority
         FROM watchlist
-        ORDER BY added_date DESC, id DESC
+        ORDER BY added_date ASC, id ASC
         """
     )
 
-    columns = ["id", "code", "company_name", "direction", "timeframe", "added_date"]
+    columns = [
+        "id", "code", "company_name", "direction", "timeframe",
+        "added_date", "priority",
+    ]
 
     rows = cursor.fetchall()
 

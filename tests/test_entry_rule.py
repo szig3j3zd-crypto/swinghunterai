@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from rules.entry_rule import evaluate_entry
+from rules.entry_rule import evaluate_entry, evaluate_ma_cross_watch, evaluate_ma_order_watch
 
 # テスト用の合成株価（数十〜数百円台）はconfig.MIN_PRICE/MAX_PRICEの
 # デフォルト範囲（1000〜5000円）外のため、価格フィルタを検証する目的の
@@ -401,3 +401,199 @@ def test_unknown_module_raises():
 
     with pytest.raises(ValueError):
         evaluate_entry(df, direction="long", modules=["not_a_real_module"], **NO_PRICE_FILTER)
+
+
+def test_ma_cross_watch_module_alone_is_never_entry_candidate():
+    # ma_cross_watchは監視専用（WATCH_ONLY_MODULES）のため、これだけを選択しても
+    # 状態・イベント条件の根拠が無く、毎日候補になってしまってはいけない
+    # （並び順も上向きに揃えた条件を使い、単なるフォールバック漏れでないか確認する）
+    df = _base_df(
+        sma5=[90, 100],
+        sma20=[80, 95],
+        sma60=[70, 71],
+        close=[90.0, 100.0],
+    )
+
+    result = evaluate_entry(
+        df, direction="long", modules=["ma_cross_watch"], **NO_PRICE_FILTER,
+    )
+
+    assert result["is_entry_candidate"] is False
+    assert result["reason"] == "no_signal_today"
+
+
+def test_ma_cross_watch_module_does_not_affect_ma_order_combination():
+    # ma_cross_watchを他モジュールと組み合わせても、エントリー候補判定
+    # （AND結合）には一切影響しない
+    df = _base_df(
+        sma5=[90, 100],
+        sma20=[80, 95],
+        sma60=[70, 71],
+        close=[90.0, 100.0],
+    )
+
+    result_without = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="full",
+        **NO_PRICE_FILTER,
+    )
+    result_with = evaluate_entry(
+        df, direction="long", modules=["ma_order", "ma_cross_watch"], ma_mode="full",
+        **NO_PRICE_FILTER,
+    )
+
+    assert result_with["is_entry_candidate"] == result_without["is_entry_candidate"]
+
+
+def test_evaluate_ma_cross_watch_before_cross_reason():
+    # 前提条件（MA5>MA20>MA60）も満たす
+    df = _base_df(
+        sma5=[120, 121],
+        sma20=[110, 111],
+        sma60=[103.5, 104.5],
+        sma100=[104, 105],
+    )
+
+    result = evaluate_ma_cross_watch(df, direction="long")
+
+    assert result["is_cross_watch_candidate"] is True
+    assert result["reason"] == "cross_watch_before"
+
+
+def test_evaluate_ma_cross_watch_after_cross_reason():
+    df = _base_df(
+        sma5=[120, 120, 120, 120],
+        sma20=[110, 110, 110, 110],
+        sma60=[101, 104, 105, 106],
+        sma100=[102, 103, 104, 105],
+    )
+
+    result = evaluate_ma_cross_watch(df, direction="long")
+
+    assert result["is_cross_watch_candidate"] is True
+    assert result["reason"] == "cross_watch_after"
+
+
+def test_evaluate_ma_cross_watch_no_signal():
+    df = _base_df(
+        sma5=[100, 100],
+        sma20=[90, 90],
+        sma60=[70, 71],
+        sma100=[104, 105],
+    )
+
+    result = evaluate_ma_cross_watch(df, direction="long")
+
+    assert result["is_cross_watch_candidate"] is False
+    assert result["reason"] is None
+
+
+def test_evaluate_ma_cross_watch_precondition_blocks_when_ma20_below_ma60():
+    # 実際に報告された不具合の再現: MA60はMA100に接近していても、MA5・MA20が
+    # MA60より大きく下にある（実質下降中の）銘柄は監視対象にしない
+    df = _base_df(
+        sma5=[100, 100],
+        sma20=[90, 90],
+        sma60=[103.5, 104.5],
+        sma100=[104, 105],
+    )
+
+    result = evaluate_ma_cross_watch(df, direction="long")
+
+    assert result["is_cross_watch_candidate"] is False
+    assert result["reason"] is None
+
+
+def test_evaluate_ma_order_watch_after_cross_reason_full_mode():
+    # "full"バリエーション（5>20>60）はMA20とMA60を監視する
+    # （前提条件のMA5>MA20も満たす）。day3でMA20がMA60を上抜け、
+    # day6まで1%以内を維持する
+    df = _base_df(
+        sma5=[120] * 7,
+        sma20=[99.5, 100.3, 101.2, 103.5, 104.3, 105.2, 106.4],
+        sma60=[100, 101, 102, 103, 104, 105, 106],
+    )
+
+    result = evaluate_ma_order_watch(df, direction="long", ma_mode="full")
+
+    assert result["is_order_watch_candidate"] is True
+    assert result["reason"] == "order_watch_after"
+
+
+def test_evaluate_ma_order_watch_before_cross_is_not_watch():
+    # クロス前（接近中。MA20がMA60をまだ下回ったまま）は並び順ウォッチの
+    # 対象にしない（並び順としては未完成のため）
+    df = _base_df(
+        sma5=[120, 120],
+        sma20=[102.5, 103.5],
+        sma60=[103, 104],
+    )
+
+    result = evaluate_ma_order_watch(df, direction="long", ma_mode="full")
+
+    assert result["is_order_watch_candidate"] is False
+    assert result["reason"] is None
+
+
+def test_evaluate_ma_order_watch_after_cross_reason_full_100_mode():
+    # "full_100"バリエーション（5>20>100）はMA20とMA100を監視する
+    # （前提条件のMA5>MA20も満たす）
+    df = _base_df(
+        sma5=[110, 110, 110, 110],
+        sma20=[101, 104, 105, 106],
+        sma100=[102, 103, 104, 105],
+    )
+
+    result = evaluate_ma_order_watch(df, direction="long", ma_mode="full_100")
+
+    assert result["is_order_watch_candidate"] is True
+    assert result["reason"] == "order_watch_after"
+
+
+def test_evaluate_ma_order_watch_no_signal():
+    df = _base_df(
+        sma5=[110, 110],
+        sma20=[70, 71],
+        sma60=[103, 104],
+    )
+
+    result = evaluate_ma_order_watch(df, direction="long", ma_mode="full")
+
+    assert result["is_order_watch_candidate"] is False
+    assert result["reason"] is None
+
+
+def test_evaluate_ma_order_watch_precondition_blocks_when_ma5_below_ma20():
+    # 実際に報告された不具合の再現: MA20とMA60はクロス済み・1%以内でも、
+    # MA5がMA20を下回ったまま（並び順としてはショート寄り）の銘柄は
+    # 監視対象にしない
+    df = _base_df(
+        sma5=[90] * 7,
+        sma20=[99.5, 100.3, 101.2, 103.5, 104.3, 105.2, 106.4],
+        sma60=[100, 101, 102, 103, 104, 105, 106],
+    )
+
+    result = evaluate_ma_order_watch(df, direction="long", ma_mode="full")
+
+    assert result["is_order_watch_candidate"] is False
+    assert result["reason"] is None
+
+
+def test_evaluate_ma_order_watch_does_not_affect_entry_candidate_and_combination():
+    # 並び順ウォッチはevaluate_entry()のAND結合とは無関係の独立関数のため、
+    # 呼び出してもentry_candidate判定には一切影響しない
+    df = _base_df(
+        sma5=[90, 100],
+        sma20=[80, 95],
+        sma60=[70, 71],
+        close=[90.0, 100.0],
+    )
+
+    result_before = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="full", **NO_PRICE_FILTER,
+    )
+    evaluate_ma_order_watch(df, direction="long", ma_mode="full")
+    result_after = evaluate_entry(
+        df, direction="long", modules=["ma_order"], ma_mode="full", **NO_PRICE_FILTER,
+    )
+
+    assert result_before["is_entry_candidate"] == result_after["is_entry_candidate"]

@@ -8,6 +8,11 @@ from analysis.ma_cross import (
     detect_perfect_dead_cross,
     detect_perfect_golden_cross,
 )
+from analysis.ma_cross_watch import (
+    MA_CROSS_WATCH_PRECONDITION_COLUMNS,
+    detect_ma_cross_watch,
+    detect_ma_order_watch,
+)
 from analysis.ma_trend import (
     get_current_trend_period,
     is_long_trend_series,
@@ -27,7 +32,12 @@ from scoring.entry_score import calculate_total_score
 EVENT_MODULES = (
     "golden_cross", "perfect_golden_cross", "bounce", "parallel_rise", "half_signal",
 )
-VALID_MODULES = ("ma_order",) + EVENT_MODULES
+
+# エントリー候補判定（AND結合）には一切関与しない、監視銘柄専用のモジュール
+# （entry_signal_spec.md 14章）
+WATCH_ONLY_MODULES = ("ma_cross_watch",)
+
+VALID_MODULES = ("ma_order",) + EVENT_MODULES + WATCH_ONLY_MODULES
 
 
 def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=None,
@@ -168,10 +178,15 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
 
         for series in event_series.values():
             combined_candidate &= series.reindex(df.index).fillna(False)
-    else:
+    elif "ma_order" in modules:
         # イベント型モジュールを選択していない場合（並び順のみ選択等）は、
         # 状態条件を満たしている当日をそのまま候補日とする
         combined_candidate = state_ok
+    else:
+        # WATCH_ONLY_MODULES（ma_cross_watch等）のみ選択している場合、
+        # エントリー候補判定の根拠となる状態・イベント条件が存在しないため、
+        # 候補日にはしない（監視専用モジュールなので、これで正しい）
+        combined_candidate = pd.Series(False, index=df.index)
 
     if not bool(combined_candidate.iloc[-1]):
         if is_watch_today:
@@ -222,6 +237,71 @@ def evaluate_entry(df, direction, modules, ma_mode="full", bounce_merge_within=N
         "risk_reward_ratio": risk_reward_ratio,
         "score": score,
     }
+
+
+def evaluate_ma_cross_watch(df, direction):
+
+    """
+    MA60/100接近ウォッチモジュール判定（監視専用、entry_signal_spec.md 14章）
+
+    evaluate_entry()のAND結合とは独立に判定する（このモジュールは
+    エントリー候補判定に一切関与しないため）。呼び出し側
+    （service.screening_service._evaluate_stock）で"ma_cross_watch"が
+    選択されている場合のみ、かつentry_candidateでない場合にのみ使う。
+
+    監視ペア（MA60・MA100）の接近・クロスだけでなく、
+    MA_CROSS_WATCH_PRECONDITION_COLUMNSで定義した前提条件（MA5・MA20が
+    既に正しい向きで並んでいること）も満たす日だけを対象にする（2026-08-23
+    追加。MA5・MA20が大きく下にある銘柄まで監視対象に入っていた不具合の修正）
+
+    Returns
+    -------
+    result
+        is_cross_watch_candidate（bool）・reason（"cross_watch_before"|
+        "cross_watch_after"|None）を持つdict。reasonはUI表示用
+        （クロス前の接近中/クロス後の確認期間中のどちらか）
+    """
+
+    watch_result = detect_ma_cross_watch(
+        df, direction=direction, precondition_columns=MA_CROSS_WATCH_PRECONDITION_COLUMNS,
+    )
+
+    if not bool(watch_result["cross_watch"].iloc[-1]):
+        return {"is_cross_watch_candidate": False, "reason": None}
+
+    reason = (
+        "cross_watch_before" if bool(watch_result["before_cross"].iloc[-1])
+        else "cross_watch_after"
+    )
+
+    return {"is_cross_watch_candidate": True, "reason": reason}
+
+
+def evaluate_ma_order_watch(df, direction, ma_mode):
+
+    """
+    並び順ウォッチ判定（監視専用、entry_signal_spec.md 15章）
+
+    evaluate_entry()のAND結合とは独立に判定する。並び順（ma_order）モジュール
+    自体のエントリー候補判定（AND結合）には一切影響しない。呼び出し側
+    （service.screening_service._evaluate_stock）で"ma_order"が選択されている
+    場合のみ、かつentry_candidateでない場合にのみ使う
+
+    Returns
+    -------
+    result
+        is_order_watch_candidate（bool）・reason（"order_watch_after"|None）を
+        持つdict。reasonはUI表示用（並び順完成後の確認期間中であることを示す。
+        detect_ma_order_watch()はクロス前の接近中を対象にしないため、Trueの
+        場合は常に"order_watch_after"になる）
+    """
+
+    watch_result = detect_ma_order_watch(df, direction=direction, ma_mode=ma_mode)
+
+    if not bool(watch_result["cross_watch"].iloc[-1]):
+        return {"is_order_watch_candidate": False, "reason": None}
+
+    return {"is_order_watch_candidate": True, "reason": "order_watch_after"}
 
 
 def _skip(reason, price=None, direction=None):

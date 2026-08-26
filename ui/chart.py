@@ -514,6 +514,13 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         const thumb = document.getElementById("sh-scrollbar-thumb");
         const storageKey = {storage_key_json};
         const viewSignature = {view_signature_json};
+        // 表示期間の端（表示幅の左右端）のバーの中心座標ちょうどにx軸の端を
+        // 合わせると、そのバー自身の幅の半分が軸の外にはみ出して縦半分しか
+        // 描画されなくなる。バー1本分（暦日換算で概ね1日。build_price_chart()の
+        // 出来高バー幅の設定と対応。dashboard.pyのCHART_BAR_EDGE_PADDINGと
+        // 同じ値）の半分弱を両端の余白として持たせ、矢印キー・ドラッグ・
+        // スクロールバーのどの操作で端まで動かしても端のバーが欠けないようにする
+        const barEdgePaddingMs = 9.6 * 60 * 60 * 1000;
 
         // 現在の表示範囲（カレンダー日付）をsessionStorageへ保存する。
         // 保存先はwindow.parent（メインページ）側にする。このiframe自身は
@@ -561,8 +568,8 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             // が新しいviewSignatureで上書き保存する
             if (saved.viewSignature !== viewSignature) return;
 
-            const minMs = scrollState.barTimestamps[0];
-            const maxMs = scrollState.barTimestamps[scrollState.barTimestamps.length - 1];
+            const minMs = scrollState.barTimestamps[0] - barEdgePaddingMs;
+            const maxMs = scrollState.barTimestamps[scrollState.barTimestamps.length - 1] + barEdgePaddingMs;
             let startMs = new Date(saved.start).getTime();
             let endMs = new Date(saved.end).getTime();
             if (!(startMs < endMs)) return;
@@ -847,10 +854,12 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     scrollState.barDates.length - 1
                 );
                 keyMoveInFlight = true;
+                const rangeStartMs = new Date(scrollState.barDates[nextIndex]).getTime() - barEdgePaddingMs;
+                const rangeEndMs = new Date(scrollState.barDates[endIndex]).getTime() + barEdgePaddingMs;
                 window.parent.Plotly.relayout(target, {{
                     "xaxis.range": [
-                        scrollState.barDates[nextIndex],
-                        scrollState.barDates[endIndex],
+                        new Date(rangeStartMs).toISOString(),
+                        new Date(rangeEndMs).toISOString(),
                     ],
                 }}).then(function() {{
                     keyMoveInFlight = false;
@@ -918,8 +927,9 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                         new Date(range[1]).getTime(),
                     ],
                     trackWidthPx: track.getBoundingClientRect().width,
-                    minMs: currentScrollState.barTimestamps[0],
-                    maxMs: currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1],
+                    minMs: currentScrollState.barTimestamps[0] - barEdgePaddingMs,
+                    maxMs: currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1]
+                        + barEdgePaddingMs,
                 }};
                 e.preventDefault();
             }});
@@ -972,8 +982,9 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 if (!currentScrollState || !range) return;
 
                 const rect = track.getBoundingClientRect();
-                const minMs = currentScrollState.barTimestamps[0];
-                const maxMs = currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1];
+                const minMs = currentScrollState.barTimestamps[0] - barEdgePaddingMs;
+                const maxMs = currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1]
+                    + barEdgePaddingMs;
                 const clickMs = minMs + ((e.clientX - rect.left) / rect.width) * (maxMs - minMs);
                 const width = new Date(range[1]).getTime() - new Date(range[0]).getTime();
                 let newStart = clickMs - width / 2;
