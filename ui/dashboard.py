@@ -1633,6 +1633,9 @@ def _render_trades_section():
     st.markdown("#### 保有中")
     if open_trades:
         _render_trade_table(open_trades, key_suffix="open")
+        # スキャンタブの候補一覧（「○件の候補」）と同様、件数を表示する
+        # （2026-08-30追加）
+        st.caption(f"{len(open_trades)}件の保有銘柄")
     else:
         st.caption("現在保有中の銘柄はありません。")
 
@@ -1652,6 +1655,7 @@ def _render_trades_section():
                     _render_trade_table(
                         month_trades, key_suffix=f"{year}_{month}", read_only=True
                     )
+        st.caption(f"{len(closed_trades)}件の決算済み銘柄")
     else:
         st.caption("決算済みの銘柄はまだありません。")
 
@@ -1855,12 +1859,16 @@ def _render_watchlist_section():
     st.markdown("#### 優先監視銘柄")
     if priority_stocks:
         _render_watchlist_table(priority_stocks, key_suffix="priority")
+        # スキャンタブの候補一覧（「○件の候補」）と同様、件数を表示する
+        # （2026-08-30追加）
+        st.caption(f"{len(priority_stocks)}件の優先監視銘柄")
     else:
         st.caption("優先監視銘柄はまだありません。")
 
     st.markdown("#### 監視銘柄")
     if normal_stocks:
         _render_watchlist_table(normal_stocks, key_suffix="normal")
+        st.caption(f"{len(normal_stocks)}件の監視銘柄")
     else:
         st.caption("監視銘柄はまだありません。")
 
