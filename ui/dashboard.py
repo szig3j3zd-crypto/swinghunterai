@@ -559,6 +559,46 @@ def _render_scroll_trigger(scroll_to_chart, scroll_to_page_top):
         unsafe_allow_javascript=True,
     )
 
+def _style_delete_buttons_red():
+
+    """
+    削除ボタン（取り消せない操作）の文字だけを赤くする（背景・枠線は
+    変えない）。2026-08-30改訂: 当初はtype="primary"で背景ごと赤くして
+    いたが、「赤文字は文字だけを赤にしてほしい」との指摘を受けてこちらに
+    変更した。Streamlitはst.button()のkey引数をDOMに公開しないため、CSSの
+    key属性セレクタでは狙えず、ボタンの表示テキストで判定してJSで
+    style.colorを直接書き換える。nonceで再実行を強制する理由は
+    _render_scroll_trigger()のdocstring参照（同じ内容のHTML文字列は
+    Streamlitに再実行されないため）
+    """
+
+    nonce = st.session_state.get("_delete_button_style_nonce", 0) + 1
+    st.session_state["_delete_button_style_nonce"] = nonce
+
+    labels_js = ", ".join(
+        f'"{label}"'
+        for label in ["監視銘柄を削除", "選択した取引を削除"]
+    )
+
+    script = f"""
+        var labels = [{labels_js}];
+        document.querySelectorAll('button').forEach(function(btn) {{
+            if (labels.indexOf(btn.textContent.trim()) === -1) {{
+                return;
+            }}
+            btn.style.color = '#ff4b4b';
+            btn.querySelectorAll('p, div').forEach(function(el) {{
+                el.style.color = '#ff4b4b';
+            }});
+        }});
+    """
+
+    st.html(
+        f'<div style="position:fixed;top:0;left:0;width:0;height:0;overflow:hidden;">'
+        f"<script>/* {nonce} */(function() {{ {script} }})();</script>"
+        f"</div>",
+        unsafe_allow_javascript=True,
+    )
 
 
 # チャートの表示切替チェックボックスの既定値。「候補を更新」直後など、
@@ -1251,99 +1291,112 @@ with tab_scan:
 
     if add_candidate is not None:
         st.divider()
-        st.subheader("売買銘柄・監視銘柄に追加")
+        # 2026-08-30改訂: 「監視銘柄として追加」を「売買銘柄として追加」より
+        # 上に表示する順に変更したため、見出しの表記順もそれに合わせた
+        # （以前は「売買銘柄・監視銘柄に追加」）
+        st.subheader("監視銘柄・売買銘柄")
 
         add_label = f"{add_candidate['code']} {add_candidate['company_name']}"
         st.caption(f"追加対象: {add_label}（上に表示中のチャートと同じ銘柄）")
 
         add_timeframe_label = TIMEFRAME_LABELS[add_candidate["timeframe"]]
 
-        col_trade, col_watch = st.columns(2)
+        st.write("監視銘柄として追加")
+        st.caption(
+            f"方向: {DIRECTION_LABELS[add_candidate['direction']]}　"
+            f"時間足: {add_timeframe_label}"
+        )
 
-        with col_trade:
-            with st.form("add_trade_form"):
-                st.write("売買銘柄として追加")
-                st.caption(f"時間足: {add_timeframe_label}")
+        # st.columns(2)だと半分幅ずつ確保されボタン間に大きな隙間ができる
+        # ため、内容幅のアイテムを詰めて並べられるst.container(horizontal=True)
+        # を使う（2026-08-30改訂）
+        with st.container(horizontal=True, gap="small"):
+            add_to_priority_watchlist_clicked = st.button("優先監視銘柄に追加")
+            add_to_watchlist_clicked = st.button("監視銘柄に追加")
 
-                trade_date_input = st.date_input("取引日", value=date.today())
-                entry_price_input = st.number_input(
-                    "購入株価", min_value=0.0, value=float(add_candidate["price"])
+        if add_to_watchlist_clicked or add_to_priority_watchlist_clicked:
+            is_priority = add_to_priority_watchlist_clicked
+            watchlist_kind_label = "優先監視銘柄" if is_priority else "監視銘柄"
+
+            # 既に保有中（未決済）の銘柄は、売買銘柄と監視銘柄の二重登録に
+            # なるため追加しない
+            if has_open_trade(add_candidate["code"]):
+                st.error(
+                    f"{add_label} は既に保有中（未決済）の売買銘柄として"
+                    f"登録されているため、{watchlist_kind_label}には追加できません"
                 )
-                quantity_input = st.number_input(
-                    "株数", min_value=1, value=100, step=100
+            elif not add_watchlist_stock(
+                code=add_candidate["code"],
+                company_name=add_candidate["company_name"],
+                direction=add_candidate["direction"],
+                timeframe=add_candidate["timeframe"],
+                added_date=str(date.today()),
+                priority=is_priority,
+            ):
+                st.warning(
+                    f"{add_label} は既に監視銘柄（{add_timeframe_label}）に"
+                    "登録済みです"
                 )
-                exit_price_input = st.number_input(
-                    "決算株価（利確/損切。未決済なら0のまま）",
-                    min_value=0.0,
-                    value=0.0,
+            else:
+                st.success(
+                    f"{add_label} を{watchlist_kind_label}"
+                    f"（{add_timeframe_label}）に追加しました"
                 )
-                exit_date_input = st.date_input(
-                    "決済日（決算株価を入力した場合のみ）", value=date.today()
-                )
-                is_nisa_input = st.checkbox("NISA枠（非課税）")
 
-                if st.form_submit_button("売買銘柄に追加"):
-                    add_trade(
-                        code=add_candidate["code"],
-                        company_name=add_candidate["company_name"],
-                        direction=add_candidate["direction"],
-                        timeframe=add_candidate["timeframe"],
-                        trade_date=str(trade_date_input),
-                        entry_price=entry_price_input,
-                        exit_price=(
-                            exit_price_input if exit_price_input > 0 else None
-                        ),
-                        quantity=int(quantity_input),
-                        is_nisa=is_nisa_input,
-                        exit_date=(
-                            str(exit_date_input) if exit_price_input > 0 else None
-                        ),
-                    )
+        with st.form("add_trade_form"):
+            st.write("売買銘柄として追加")
+            st.caption(f"時間足: {add_timeframe_label}")
 
-                    # 監視から保有へ卒業したとみなし、監視銘柄に残っていれば
-                    # 自動で削除する（手動削除の手間・二重登録を防ぐため）
-                    removed_from_watchlist = delete_watchlist_stocks_by_code(
-                        add_candidate["code"]
-                    )
-
-                    if removed_from_watchlist:
-                        st.success(
-                            f"{add_label} を売買銘柄（{add_timeframe_label}）に追加し、"
-                            "監視銘柄からは削除しました"
-                        )
-                    else:
-                        st.success(
-                            f"{add_label} を売買銘柄（{add_timeframe_label}）に追加しました"
-                        )
-
-        with col_watch:
-            st.write("監視銘柄として追加")
-            st.caption(
-                f"方向: {DIRECTION_LABELS[add_candidate['direction']]}　"
-                f"時間足: {add_timeframe_label}"
+            trade_date_input = st.date_input("取引日", value=date.today())
+            entry_price_input = st.number_input(
+                "購入株価", min_value=0.0, value=float(add_candidate["price"])
             )
+            quantity_input = st.number_input(
+                "株数", min_value=1, value=100, step=100
+            )
+            exit_price_input = st.number_input(
+                "決算株価（利確/損切。未決済なら0のまま）",
+                min_value=0.0,
+                value=0.0,
+            )
+            exit_date_input = st.date_input(
+                "決済日（決算株価を入力した場合のみ）", value=date.today()
+            )
+            is_nisa_input = st.checkbox("NISA枠（非課税）")
 
-            if st.button("監視銘柄に追加", width="stretch"):
-                # 既に保有中（未決済）の銘柄は、売買銘柄と監視銘柄の二重登録に
-                # なるため追加しない
-                if has_open_trade(add_candidate["code"]):
-                    st.error(
-                        f"{add_label} は既に保有中（未決済）の売買銘柄として"
-                        "登録されているため、監視銘柄には追加できません"
-                    )
-                elif not add_watchlist_stock(
+            if st.form_submit_button("売買銘柄に追加"):
+                add_trade(
                     code=add_candidate["code"],
                     company_name=add_candidate["company_name"],
                     direction=add_candidate["direction"],
                     timeframe=add_candidate["timeframe"],
-                    added_date=str(date.today()),
-                ):
-                    st.warning(
-                        f"{add_label} は既に監視銘柄（{add_timeframe_label}）に"
-                        "登録済みです"
+                    trade_date=str(trade_date_input),
+                    entry_price=entry_price_input,
+                    exit_price=(
+                        exit_price_input if exit_price_input > 0 else None
+                    ),
+                    quantity=int(quantity_input),
+                    is_nisa=is_nisa_input,
+                    exit_date=(
+                        str(exit_date_input) if exit_price_input > 0 else None
+                    ),
+                )
+
+                # 監視から保有へ卒業したとみなし、監視銘柄に残っていれば
+                # 自動で削除する（手動削除の手間・二重登録を防ぐため）
+                removed_from_watchlist = delete_watchlist_stocks_by_code(
+                    add_candidate["code"]
+                )
+
+                if removed_from_watchlist:
+                    st.success(
+                        f"{add_label} を売買銘柄（{add_timeframe_label}）に追加し、"
+                        "監視銘柄からは削除しました"
                     )
                 else:
-                    st.success(f"{add_label} を監視銘柄（{add_timeframe_label}）に追加しました")
+                    st.success(
+                        f"{add_label} を売買銘柄（{add_timeframe_label}）に追加しました"
+                    )
     elif candidates or (lookup_result is not None and "error" not in lookup_result):
         st.divider()
         st.info(
@@ -1645,7 +1698,6 @@ def _render_trades_section():
         if st.button(
             "選択した取引を保有中に移動",
             key="move_to_open_trade_button",
-            width="stretch",
             help="決算株価の入力を誤った場合の修正用。決算株価と決済日を"
             "クリアし、保有中に戻します",
         ):
@@ -1666,20 +1718,22 @@ def _render_trades_section():
     col_delete, col_move = st.columns(2)
 
     with col_delete:
+        # 削除は取り消せない操作のため、他のボタンと区別しやすいよう
+        # 文字色を赤くする（_style_delete_buttons_red()参照。
+        # 2026-08-30追加）
         if st.button(
             "選択した取引を削除",
             key="delete_trade_button",
-            width="stretch",
         ):
             delete_trade(focus_trade["id"])
             st.session_state["trades_chart_focus_id"] = None
             st.rerun()
+        _style_delete_buttons_red()
 
     with col_move:
         if st.button(
             "選択した取引を監視銘柄に移動",
             key="move_trade_button",
-            width="stretch",
             help="登録を間違えた場合の修正用。この取引を削除し、"
             "同じ銘柄・方向・時間足で監視銘柄に登録し直します",
         ):
@@ -1839,31 +1893,37 @@ def _render_watchlist_section():
         )
         return
 
-    if st.button("選択した監視銘柄を削除", key="delete_watchlist_button"):
-        delete_watchlist_stock(focus_stock["id"])
-        st.session_state["watchlist_chart_focus_id"] = None
-        st.rerun()
+    # 優先振り分けボタンと削除ボタンは横に並べる（st.columns(2)だと
+    # 半分幅ずつ確保されボタン間に大きな隙間ができるため、内容幅の
+    # アイテムを詰めて並べられるst.container(horizontal=True)を使う。
+    # 2026-08-30改訂: 以前は縦に並べていた）
+    with st.container(horizontal=True, gap="small"):
+        if focus_stock["priority"]:
+            if st.button(
+                "監視銘柄を優先から外す",
+                key="toggle_watchlist_priority_button",
+                help="優先監視銘柄から通常の監視銘柄に戻します",
+            ):
+                update_watchlist_priority(focus_stock["id"], False)
+                st.rerun()
+        else:
+            if st.button(
+                "監視銘柄を優先監視銘柄に追加",
+                key="toggle_watchlist_priority_button",
+                help="優先監視銘柄セクションに移動します",
+            ):
+                update_watchlist_priority(focus_stock["id"], True)
+                st.rerun()
 
-    if focus_stock["priority"]:
-        if st.button(
-            "選択した監視銘柄を優先から外す",
-            key="toggle_watchlist_priority_button",
-            width="stretch",
-            help="優先監視銘柄から通常の監視銘柄に戻します",
-        ):
-            update_watchlist_priority(focus_stock["id"], False)
+        # 削除は取り消せない操作のため、他のボタンと区別しやすいよう
+        # 文字色を赤くする（_style_delete_buttons_red()参照。2026-08-30追加）
+        if st.button("監視銘柄を削除", key="delete_watchlist_button"):
+            delete_watchlist_stock(focus_stock["id"])
+            st.session_state["watchlist_chart_focus_id"] = None
             st.rerun()
-    else:
-        if st.button(
-            "選択した監視銘柄を優先監視銘柄に追加",
-            key="toggle_watchlist_priority_button",
-            width="stretch",
-            help="優先監視銘柄セクションに移動します",
-        ):
-            update_watchlist_priority(focus_stock["id"], True)
-            st.rerun()
+    _style_delete_buttons_red()
 
-    st.markdown("##### 選択した監視銘柄を売買銘柄に移動")
+    st.markdown("##### 監視銘柄を売買銘柄に移動")
 
     with st.form("move_watchlist_to_trade_form"):
         move_trade_date_input = st.date_input("取引日", value=date.today())

@@ -55,6 +55,26 @@ def test_add_delete_watchlist_stock_roundtrip():
     assert not any(s["id"] == added["id"] for s in get_all_watchlist_stocks())
 
 
+def test_add_watchlist_stock_with_priority_true_registers_as_priority():
+    create_table()
+
+    add_watchlist_stock(
+        code="9995",
+        company_name="テスト銘柄5",
+        direction="long",
+        timeframe="daily",
+        added_date="2000-01-01",
+        priority=True,
+    )
+
+    added = next(s for s in get_all_watchlist_stocks() if s["code"] == "9995")
+
+    try:
+        assert added["priority"] == 1
+    finally:
+        delete_watchlist_stock(added["id"])
+
+
 def test_add_watchlist_stock_skips_duplicate_code_direction_timeframe():
     create_table()
 

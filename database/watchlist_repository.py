@@ -80,11 +80,13 @@ def watchlist_stock_exists(code, direction, timeframe):
     return exists
 
 
-def add_watchlist_stock(code, company_name, direction, timeframe, added_date):
+def add_watchlist_stock(code, company_name, direction, timeframe, added_date,
+                         priority=False):
     """
     監視銘柄を1件登録する
 
-    同じ銘柄コード・方向・時間足が既に登録済みの場合は二重登録せずスキップする
+    同じ銘柄コード・方向・時間足が既に登録済みの場合は二重登録せずスキップする。
+    priority=Trueで優先監視銘柄として登録する（デフォルトは通常の監視銘柄）
 
     Returns
     -------
@@ -108,16 +110,18 @@ def add_watchlist_stock(code, company_name, direction, timeframe, added_date):
             direction,
             timeframe,
             added_date,
+            priority,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             code,
             company_name,
             direction,
             timeframe,
-            added_date
+            added_date,
+            1 if priority else 0
         )
     )
 
