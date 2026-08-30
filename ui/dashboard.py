@@ -112,13 +112,25 @@ CHART_DISPLAY_WIDTH_OPTIONS = (
     [f"{n}ヶ月" for n in range(3, 12)] + [f"{n}年" for n in range(1, 6)]
 )
 
-# 表示期間・表示幅は日足/週足/月足で切り替えても変えない（値も選択状態も
-# 共通）。時間足ごとに個別のデフォルト・選択状態を持たせていた頃は、
-# 切り替えるたびにスクロールできる範囲や初期ズーム幅が変わってしまい、
-# 表示位置の復元基準もそのたびにズレて表示が安定しなかったため、
-# どちらも時間足に依存しない単一のデフォルト値にした
+# 表示期間は日足/週足/月足で切り替えても変えない（値も選択状態も共通）。
+# 時間足ごとに個別のデフォルト・選択状態を持たせていた頃は、切り替える
+# たびにスクロールできる範囲や初期ズーム幅が変わってしまい、表示位置の
+# 復元基準もそのたびにズレて表示が安定しなかったため、時間足に依存しない
+# 単一のデフォルト値にした
 CHART_PERIOD_DEFAULT = "5年"
 CHART_DISPLAY_WIDTH_DEFAULT = "6ヶ月"
+
+# 表示幅ラベル（暦期間）を時間足ごとのローソク足本数に変換する際の、
+# 1暦日あたりのおおよその本数。日足は営業日（週5日/7日）、週足は1週間に
+# 1本、月足は1ヶ月（平均30.44暦日）に1本という概算値。表示幅を時間足間で
+# 揃える（CHART_DISPLAY_WIDTH_OPTIONSから本数が最も近いラベルを選ぶ）ための
+# ものであり、実際の本数計算自体は_render_chart_block側で実データ
+# （chart_df_in_period）から数える
+CHART_BARS_PER_CALENDAR_DAY = {
+    "daily": 5 / 7,
+    "weekly": 1 / 7,
+    "monthly": 1 / 30.4368,
+}
 
 # 日単位で見たい短い表示幅では「月/日」、それより長い表示幅では「年/月」で
 # 出来高チャート下の日付軸ラベルを表示する
@@ -144,6 +156,42 @@ def _period_label_to_offset(label):
         return pd.DateOffset(months=int(label[:-2]))
 
     return pd.DateOffset(years=int(label[:-1]))
+
+
+# _width_label_to_bar_count()で表示幅ラベルを暦日数に変換する際の基準日。
+# DateOffsetの加算結果（月内日数の違い等）が呼び出しのたびにブレないよう
+# 固定の日付を使う（本数はあくまで時間足間の比較用の概算値のため、
+# 基準日自体に意味はない）
+_BAR_COUNT_ANCHOR = pd.Timestamp("2020-01-01")
+
+
+def _width_label_to_bar_count(label, timeframe):
+
+    """
+    表示幅ラベル（"6ヶ月"等）を、指定した時間足でのおおよそのローソク足
+    本数に変換する（CHART_BARS_PER_CALENDAR_DAYによる概算。日足/週足/月足で
+    表示幅を揃える際の比較に使う）
+    """
+
+    offset = _period_label_to_offset(label)
+    days = (_BAR_COUNT_ANCHOR + offset - _BAR_COUNT_ANCHOR).days
+
+    return days * CHART_BARS_PER_CALENDAR_DAY[timeframe]
+
+
+def _closest_width_label_for_bar_count(target_bar_count, timeframe):
+
+    """
+    指定した時間足で、目標本数に最も近いローソク足本数になる表示幅ラベルを
+    CHART_DISPLAY_WIDTH_OPTIONSから選ぶ
+    """
+
+    return min(
+        CHART_DISPLAY_WIDTH_OPTIONS,
+        key=lambda label: abs(
+            _width_label_to_bar_count(label, timeframe) - target_bar_count
+        ),
+    )
 
 
 def _combine_universes(labels):
@@ -289,9 +337,11 @@ def _on_candidate_table_select(table_key, candidates_list):
     "candidate"に戻ってしまう。コールバックにすることで、実際に行を
     クリックしたときだけfocus_modeが更新されるようにする
 
-    既に監視銘柄として登録済みの銘柄（is_already_watchlisted）が選択された
-    場合は無視する（_on_watch_candidate_table_selectと同じ考え方。グレー表示と
-    合わせて「選択できない」ように振る舞わせる）
+    既に監視銘柄として登録済みの銘柄（is_already_watchlisted）でも選択でき、
+    チャートを表示する（2026-08-30改訂。以前は選択自体を無視していたが、
+    グレー表示は登録済みであることが分かればよく、チャート確認まで
+    ブロックする必要はないという要望を受けて変更した。グレー表示自体は
+    引き続き行う）
 
     候補一覧・監視銘柄候補一覧は別々のst.dataframeウィジェットのため、
     片方で行を選択しても、もう片方のチェックは自動では外れない。
@@ -307,9 +357,6 @@ def _on_candidate_table_select(table_key, candidates_list):
 
     selected_candidate = candidates_list[selection[0]]
 
-    if selected_candidate.get("is_already_watchlisted"):
-        return
-
     st.session_state["focus_mode"] = "candidate"
     st.session_state["focus_candidate"] = selected_candidate
     st.session_state["watch_selection_version"] = (
@@ -323,11 +370,9 @@ def _on_watch_candidate_table_select(table_key, candidates_list):
     """
     監視銘柄候補一覧の行選択コールバック
 
-    _on_candidate_table_selectとの違い: 既に監視銘柄として登録済みの銘柄
-    （is_already_watchlisted）が選択された場合は無視する。Streamlitには
-    行ごとに選択を無効化する機能が無いため、選択イベント自体は発生するが、
-    focus_mode/focus_candidateを更新しないことでクリックを実質無効化する
-    （グレー表示と合わせて「選択できない」ように振る舞わせる）
+    _on_candidate_table_selectと同様、既に監視銘柄として登録済みの銘柄
+    （is_already_watchlisted）でも選択でき、チャートを表示する
+    （2026-08-30改訂。グレー表示自体は引き続き行う）
 
     候補一覧側のチェックが付いたままにならないよう、candidates_selection_version
     をインクリメントして候補一覧のkeyを変える（_on_candidate_table_select参照）
@@ -339,9 +384,6 @@ def _on_watch_candidate_table_select(table_key, candidates_list):
         return
 
     selected_candidate = candidates_list[selection[0]]
-
-    if selected_candidate.get("is_already_watchlisted"):
-        return
 
     st.session_state["focus_mode"] = "candidate"
     st.session_state["focus_candidate"] = selected_candidate
@@ -366,7 +408,15 @@ def _style_already_watchlisted_rows(df, candidates_list):
 
     def _style_row(row):
         if candidates_list[row.name].get("is_already_watchlisted"):
-            return ["color: #999999; font-style: italic"] * len(row)
+            # 既に監視銘柄に登録済みであることを示す表示専用のスタイル。
+            # 選択自体は引き続きでき、選択すればチャートも表示される
+            # （_on_candidate_table_select等参照。2026-08-30改訂で選択の
+            # ブロックをやめた）。文字色だけだと選択可能な行との違いが
+            # 分かりにくいため、背景色も付けて一目でわかるようにする
+            # （2026-08-29改訂）
+            return [
+                "color: #999999; font-style: italic; background-color: #ececec"
+            ] * len(row)
         return [""] * len(row)
 
     numeric_columns = df.select_dtypes(include="number").columns
@@ -386,10 +436,13 @@ def _render_scroll_if_needed():
 
     - st.session_state["scroll_to_chart"]: 銘柄をチェックしてチャート表示位置
       （focus_slot）が変わった場合に立てる。「株価チャート」の見出し
-      （_render_chart_blockの`st.markdown("##### 株価チャート")`）が
-      ビューポート上端に来るまでスクロールする。スキャン・売買銘柄・監視銘柄
-      いずれのタブでも、チャートは表より上に表示されるため、表の下の方の行を
-      チェックした場合にチャートが表示されたことに気づけるようにする
+      （_render_chart_blockの`st.markdown("##### 株価チャート")`）の直前に
+      ある見出し（銘柄コード・銘柄名、またはスキャンタブの「銘柄詳細: ...」）
+      がビューポート上端に来るまでスクロールする（2026-08-29改訂。以前は
+      「株価チャート」の見出し自体をスクロール先にしていたため、その上にある
+      銘柄コード・銘柄名が画面外に隠れてしまっていた）。スキャン・売買銘柄・
+      監視銘柄いずれのタブでも、チャートは表より上に表示されるため、表の
+      下の方の行をチェックした場合にチャートが表示されたことに気づけるようにする
     - st.session_state["scroll_to_page_top"]: サイドバーの「候補を更新」で
       新しいスキャン結果を表示した場合に立てる。ページの一番上までスクロールする
 
@@ -416,7 +469,18 @@ def _render_scroll_if_needed():
                     var heading = headings[i];
                     if (heading.textContent.trim() === '株価チャート'
                             && heading.offsetParent !== null) {
-                        heading.scrollIntoView({behavior: 'smooth', block: 'start'});
+                        // 銘柄コード・銘柄名（またはスキャンタブの「銘柄詳細:
+                        // ...」）の見出しは「株価チャート」の直前にあるため、
+                        // そちらを優先してスクロール先にする（画面上端が
+                        // 銘柄コード・銘柄名から始まるようにするため）
+                        var target = heading;
+                        for (var j = i - 1; j >= 0; j--) {
+                            if (headings[j].offsetParent !== null) {
+                                target = headings[j];
+                                break;
+                            }
+                        }
+                        target.scrollIntoView({behavior: 'smooth', block: 'start'});
                         return true;
                     }
                 }
@@ -505,6 +569,13 @@ def _render_focus_block(label, result, code, chart_timeframe):
 
     """
     選択中銘柄（個別銘柄検索 or 候補一覧からの選択）の判定結果とチャートを描画する
+
+    見出しの直後はステータスメッセージ（st.success/st.warning/st.info）のみに
+    とどめ、詳細テーブルは挟まずすぐ株価チャートを表示する（2026-08-29改訂。
+    以前はエントリー候補の場合のみコード・銘柄名・スコア等の詳細テーブルを
+    挟んでいたが、売買銘柄・監視銘柄タブ（銘柄名の見出し→すぐチャート）と
+    見え方が揃わず、自動スクロール先の直後に見慣れない画面が挟まる形に
+    なっていたため削除した。詳細情報は候補一覧の表に既に出ている）
     """
 
     st.subheader(f"銘柄詳細: {label}")
@@ -522,11 +593,6 @@ def _render_focus_block(label, result, code, chart_timeframe):
 
     if result["is_entry_candidate"]:
         st.success("本日のエントリー候補です")
-        st.dataframe(
-            pd.DataFrame([_candidate_row(result)]),
-            use_container_width=True,
-            hide_index=True,
-        )
     else:
         price = result.get("price")
         price_note = f"　現在の株価: {price}円" if price is not None else ""
@@ -609,19 +675,35 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         )
     st.session_state[period_pref_key] = period_label
 
-    # 表示期間と同様、key・session_stateとも時間足を含めない
-    # （日足/週足/月足を切り替えても値を変えないため）
-    width_pref_key = f"chart_display_width_pref_{key_prefix}"
+    # 表示幅は「ローソク足の本数」を時間足に依存しない基準として保持する
+    # （key・session_stateとも時間足を含めない）。表示するラベル自体は
+    # 時間足ごとに、その本数に最も近いものを選び直す（2026-08-30改訂。
+    # 以前はラベル文字列をそのまま共有していたため、同じ「6ヶ月」でも
+    # 日足は約130本・週足は約26本・月足は約6本と表示本数が大きく異なり、
+    # ローソク足の見た目の太さが時間足を切り替えるたびに揃わなかった。
+    # 本数を基準にすることで太さの見た目を揃え、表示上のラベルは実際に
+    # その時間足で表示されている期間に合わせる。以前あった「表示期間・
+    # 表示幅は時間足を切り替えても値を変えない」という制約は、値の実体を
+    # 文字列ラベルから本数に変えたことで、ラベル表示のほうが時間足ごとに
+    # 変わる形に変更した）
+    width_pref_key = f"chart_display_width_bar_target_{key_prefix}"
+    default_bar_target = _width_label_to_bar_count(
+        CHART_DISPLAY_WIDTH_DEFAULT, "daily"
+    )
+    bar_target = st.session_state.get(width_pref_key, default_bar_target)
+    suggested_width_label = _closest_width_label_for_bar_count(
+        bar_target, chart_timeframe
+    )
     with width_col:
         display_width_label = st.selectbox(
             "チャート表示幅",
             options=CHART_DISPLAY_WIDTH_OPTIONS,
-            index=CHART_DISPLAY_WIDTH_OPTIONS.index(
-                st.session_state.get(width_pref_key, CHART_DISPLAY_WIDTH_DEFAULT)
-            ),
-            key=f"chart_display_width_select_{key_prefix}",
+            index=CHART_DISPLAY_WIDTH_OPTIONS.index(suggested_width_label),
+            key=f"chart_display_width_select_{key_prefix}_{chart_timeframe}",
         )
-    st.session_state[width_pref_key] = display_width_label
+    st.session_state[width_pref_key] = _width_label_to_bar_count(
+        display_width_label, chart_timeframe
+    )
 
     # vertical_alignment="bottom"で、ラベル行が無いチェックボックスを
     # チェックボックス自体の高さに揃える。列幅比率は各チェックボックスの
@@ -1033,6 +1115,7 @@ with tab_scan:
             f"（{st.session_state['direction']} / {timeframe_label} / "
             f"{st.session_state['universe_label']}） "
             "行をクリックするとチャートを表示します。"
+            "グレー表示の行は既に監視銘柄に登録済みです（選択してチャートは確認できます）。"
         )
 
     # 反発（entry_signal_spec.md 6章）・MA60/100接近ウォッチ（14章）・並び順
@@ -1072,6 +1155,7 @@ with tab_scan:
 
         st.caption(
             f"{len(watch_candidates)}件の監視銘柄候補。行をクリックするとチャートを表示します。"
+            "グレー表示の行は既に監視銘柄に登録済みです（選択してチャートは確認できます）。"
         )
     elif candidates is not None and (
         "bounce" in modules or "ma_cross_watch" in modules or "ma_order" in modules
@@ -1220,7 +1304,7 @@ with tab_scan:
 def _style_negative_pnl_red(df):
 
     """
-    「損益（税引後）」列がマイナスの行を、行全体を赤字にして表示する
+    「損益」列がマイナスの行を、行全体を赤字にして表示する
 
     st.data_editor()にpandas Styler経由で渡すと、Styler由来の見た目は
     編集不可（disabled）の列にのみ適用される（st.data_editorの仕様）。
@@ -1229,14 +1313,14 @@ def _style_negative_pnl_red(df):
     以前は一部列のみ赤字になっていた）
 
     Styler経由だと、column_configで書式を指定していない数値列
-    （購入株価・株数・損益（税引後）等）がst.data_editorの既定フォーマットを
+    （購入株価・株数・損益等）がst.data_editorの既定フォーマットを
     通らず末尾に「.000000」等が付いてしまうため、明示的にフォーマットし
     直す（末尾の0を落としつつ、実用上十分な精度は保つ。決算株価は
     column_config.NumberColumnが優先されるためここでの指定と競合しない）
     """
 
     def _style_row(row):
-        if pd.notna(row["損益（税引後）"]) and row["損益（税引後）"] < 0:
+        if pd.notna(row["損益"]) and row["損益"] < 0:
             return ["color: #d32f2f"] * len(row)
         return [""] * len(row)
 
@@ -1283,21 +1367,27 @@ def _render_trade_table(trades_subset, key_suffix, read_only=False):
                 "NISA": bool(trade.get("is_nisa", False)),
                 "時間足": TIMEFRAME_LABELS[trade["timeframe"]],
                 "取引日": date.fromisoformat(trade["trade_date"]),
-                "購入株価": trade["entry_price"],
-                "決算株価": trade["exit_price"],
                 "決済日": (
                     date.fromisoformat(trade["exit_date"])
                     if trade.get("exit_date") else None
                 ),
+                "購入株価": trade["entry_price"],
+                "決算株価": trade["exit_price"],
                 "株数": trade["quantity"],
-                "損益（税引後）": calculate_pnl(trade),
+                "損益": calculate_pnl(trade),
             }
             for trade in trades_subset
         ],
         index=[trade["id"] for trade in trades_subset],
     )
 
-    disabled_columns = ["コード", "銘柄名", "方向", "損益（税引後）"]
+    # DateColumnの入力UI（カレンダーピッカー）を確実に出すため、object dtype
+    # （date/Noneの混在）ではなくdatetime64に明示変換する。変換しないと
+    # 一部環境でテキスト直接入力扱いになりカレンダーが出ないことがある
+    display_df["取引日"] = pd.to_datetime(display_df["取引日"])
+    display_df["決済日"] = pd.to_datetime(display_df["決済日"])
+
+    disabled_columns = ["コード", "銘柄名", "方向", "損益"]
     if read_only:
         # 決算済みの取引は（NISA区分・決済日を除き）編集不可にする。損益が
         # マイナスの行を行全体赤字にするための制約（st.data_editorはStyler
@@ -1317,11 +1407,14 @@ def _render_trade_table(trades_subset, key_suffix, read_only=False):
         disabled=disabled_columns,
         column_config={
             "表示": st.column_config.CheckboxColumn(
-                help="チェックした銘柄のチャートを上に表示します"
+                help="チェックした銘柄のチャートを上に表示します", pinned=True
             ),
+            "コード": st.column_config.Column(pinned=True),
+            "銘柄名": st.column_config.Column(pinned=True),
             "NISA": st.column_config.CheckboxColumn(
-                help="NISA口座での取引はチェック。税引後損益の計算で"
-                "譲渡益課税を適用しません（非課税）"
+                help="NISA口座での取引はチェック。個別の「損益」表示には"
+                "影響しませんが、年間損益の合計課税でこのトレードを"
+                "非課税として扱います"
             ),
             "取引日": st.column_config.DateColumn(
                 format="YYYY-MM-DD",
@@ -1338,10 +1431,10 @@ def _render_trade_table(trades_subset, key_suffix, read_only=False):
                 options=list(TIMEFRAME_LABELS.values()),
                 help="日足/週足を間違えて登録した場合はここで修正できます",
             ),
-            "損益（税引後）": st.column_config.NumberColumn(
-                help="特定口座（源泉徴収あり）を前提に、利益には譲渡益課税"
-                "20.315%を差し引いた税引後の額で表示しています"
-                "（NISA区分のトレードは非課税）"
+            "損益": st.column_config.NumberColumn(
+                help="税引前の金額です。譲渡益課税は個別のトレードではなく、"
+                "年間損益・全期間の損益合計に対して年単位でまとめて"
+                "計算しています"
             ),
         },
     )
@@ -1441,11 +1534,6 @@ def _render_trades_section():
 
     st.markdown("#### 決算済み")
     if closed_trades:
-        st.caption(
-            "損益は税引後（特定口座・源泉徴収ありを想定、譲渡益課税20.315%を"
-            "利益から差し引いた額）。決算済みの取引は編集できません。"
-            "修正する場合は対象銘柄を選択し「保有中に移動」してください。"
-        )
         groups = group_by_year_and_month(closed_trades)
 
         for year_index, (year, year_pnl, month_groups) in enumerate(groups):
@@ -1455,7 +1543,7 @@ def _render_trades_section():
             ):
                 for month, month_pnl, month_trades in month_groups:
                     st.markdown(
-                        f"**{month}月　月間損益（税引後）: {month_pnl:+,.0f}円**"
+                        f"**{month}月　月間損益（税引前）: {month_pnl:+,.0f}円**"
                     )
                     _render_trade_table(
                         month_trades, key_suffix=f"{year}_{month}", read_only=True
