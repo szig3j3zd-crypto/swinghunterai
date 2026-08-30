@@ -20,7 +20,6 @@ except Exception:
     pass
 
 import pandas as pd
-import streamlit.components.v1 as components
 
 from config.config import MAX_PRICE, MIN_MARKET_CAP, MIN_PRICE, MIN_VOLUME
 from database.stock_master_reader import get_active_stocks
@@ -143,7 +142,7 @@ CHART_TICK_FORMAT_SHORT_WIDTHS = {"3ヶ月"}
 # そちらにも同じ値を渡している）。バー1本分（暦日換算で概ね1日、
 # ui.chart.build_price_chartの出来高バー幅の設定と対応）の半分弱を
 # 両端に余白として足し、端のバーが欠けずに全体表示されるようにする
-CHART_BAR_EDGE_PADDING = pd.Timedelta(hours=9.6)
+CHART_BAR_EDGE_PADDING = pd.Timedelta(34560, unit="s")  # 9時間36分（=9.6時間）
 
 
 def _period_label_to_offset(label):
@@ -428,43 +427,74 @@ def _style_already_watchlisted_rows(df, candidates_list):
     )
 
 
-def _render_scroll_if_needed():
+def _consume_scroll_flags():
 
     """
-    直前の操作でチャート表示位置が変わった、またはスキャンを実行した直後の
-    再実行であれば、該当する位置まで自動でスクロールする
+    スクロールが必要かどうかのフラグを読み取り、消費する（session_stateから
+    pop。次の再実行ではユーザーが再度操作しない限りスクロールしないように
+    するため）。_render_scroll_trigger()と分けているのは、フラグの消費は
+    1回だけ行いたい一方、実際のスクロール実行（JS埋め込み）は複数箇所で
+    行いたいため（_render_scroll_trigger()のdocstring参照）
 
-    - st.session_state["scroll_to_chart"]: 銘柄をチェックしてチャート表示位置
-      （focus_slot）が変わった場合に立てる。「株価チャート」の見出し
-      （_render_chart_blockの`st.markdown("##### 株価チャート")`）の直前に
-      ある見出し（銘柄コード・銘柄名、またはスキャンタブの「銘柄詳細: ...」）
-      がビューポート上端に来るまでスクロールする（2026-08-29改訂。以前は
-      「株価チャート」の見出し自体をスクロール先にしていたため、その上にある
-      銘柄コード・銘柄名が画面外に隠れてしまっていた）。スキャン・売買銘柄・
-      監視銘柄いずれのタブでも、チャートは表より上に表示されるため、表の
-      下の方の行をチェックした場合にチャートが表示されたことに気づけるようにする
-    - st.session_state["scroll_to_page_top"]: サイドバーの「候補を更新」で
-      新しいスキャン結果を表示した場合に立てる。ページの一番上までスクロールする
-
-    どちらのフラグも実行後は消費して倒す（次の再実行ではユーザーが再度操作
-    しない限りスクロールしない）。
-
-    st.components.v1.html()呼び出し自体は毎回同じ形で（スクロール不要な場合は
-    空のscriptで）行い、呼び出す/呼び出さないを条件分岐しない。この関数は
-    st.tabs()より前で呼ばれるため、コンポーネント要素の有無を再実行のたびに
-    変えると、st.tabs()がキーの無いウィジェットとして位置ベースで
-    再識別されてしまい、選択中のタブが変わるたびに「スキャン」タブへ
-    リセットされてしまう不具合があった（2026-08-23発見・修正）
+    Returns
+    -------
+    (scroll_to_chart, scroll_to_page_top)
+        - scroll_to_chart: 銘柄をチェックしてチャート表示位置（focus_slot）が
+          変わった場合に立つ
+        - scroll_to_page_top: サイドバーの「候補を更新」で新しいスキャン結果を
+          表示した場合に立つ
     """
 
     scroll_to_chart = st.session_state.pop("scroll_to_chart", False)
     scroll_to_page_top = st.session_state.pop("scroll_to_page_top", False)
 
+    return scroll_to_chart, scroll_to_page_top
+
+
+def _render_scroll_trigger(scroll_to_chart, scroll_to_page_top):
+
+    """
+    必要なら該当する位置まで自動でスクロールするJSを埋め込む
+
+    - scroll_to_chart: 「株価チャート」の見出し（_render_chart_blockの
+      `st.markdown("##### 株価チャート")`）の直前にある見出し（銘柄コード・
+      銘柄名、またはスキャンタブの「銘柄詳細: ...」）がビューポート上端に
+      来るまでスクロールする（2026-08-29改訂。以前は「株価チャート」の
+      見出し自体をスクロール先にしていたため、その上にある銘柄コード・
+      銘柄名が画面外に隠れてしまっていた）
+    - scroll_to_page_top: ページの一番上までスクロールする
+
+    st.html()呼び出し自体は毎回同じ形で（スクロール不要な場合は空のscriptで）
+    行い、呼び出す/呼び出さないを条件分岐しない。st.tabs()より前で呼ぶ
+    箇所があるため、要素の有無を再実行のたびに変えると、st.tabs()がキーの
+    無いウィジェットとして位置ベースで再識別されてしまい、選択中のタブが
+    変わるたびに「スキャン」タブへリセットされてしまう不具合があった
+    （2026-08-23発見・修正）
+
+    この関数はスキャン・売買銘柄・監視銘柄それぞれのタブ本文の末尾、および
+    st.tabs()の直前の計4箇所から、同じ(scroll_to_chart, scroll_to_page_top)
+    を渡して呼ぶ（2026-08-30改訂。念のための多重化。下記のnonceで根本修正
+    済みのため実際には最初の呼び出しだけで足りるはずだが、コストが低いため
+    保険として残す）。「候補一覧の下の方の行を選択してもチャート画面まで
+    戻らない」不具合の原因は2つあり、両方修正した（実機・自動テストで
+    再現・複数回の選択を繰り返しても再発しないことを確認済み）
+    - iframe（st.components.v1.html）は、ページが大きくスクロールされて
+      いて描画対象がビューポートから遠く離れていると、ブラウザ側の描画
+      最適化によりiframe内のJSが実行されないことがあった → iframeを
+      使わないst.html(unsafe_allow_javascript=True)に変更
+    - scroll_to_chart時のスクリプトの中身は、選択した銘柄によらず
+      （「株価チャート」の見出しを探すだけの汎用処理のため）毎回まったく
+      同じ文字列になる。StreamlitはHTML文字列が前回と同じだとDOMを更新
+      しない（＝scriptタグを再実行しない）ため、1回目の選択では動くが
+      2回目以降は同じ内容と判定されて実行されなかった → 実行のたびに
+      変わる値（連番）をscriptタグの中身に混ぜ込み、内容が必ず変わる
+      ようにした（下記nonce参照）
+    """
+
     if scroll_to_chart:
         script = """
             function scrollToChartHeading() {
-                var doc = window.parent.document;
-                var headings = doc.querySelectorAll('h1, h2, h3, h4, h5, h6');
+                var headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
                 for (var i = 0; i < headings.length; i++) {
                     var heading = headings[i];
                     if (heading.textContent.trim() === '株価チャート'
@@ -480,7 +510,7 @@ def _render_scroll_if_needed():
                                 break;
                             }
                         }
-                        target.scrollIntoView({behavior: 'smooth', block: 'start'});
+                        target.scrollIntoView({behavior: 'instant', block: 'start'});
                         return true;
                     }
                 }
@@ -493,11 +523,11 @@ def _render_scroll_if_needed():
                         // メインコンテンツはwindow/bodyではなく、
                         // section[data-testid="stMain"]自身がスクロールする
                         // 独立したコンテナになっている（Streamlitのレイアウト仕様）
-                        var mainSection = window.parent.document.querySelector(
+                        var mainSection = document.querySelector(
                             'section[data-testid="stMain"]'
                         );
                         if (mainSection) {
-                            mainSection.scrollTo({top: 0, behavior: 'smooth'});
+                            mainSection.scrollTo({top: 0, behavior: 'instant'});
                         }
                     }
                 }, 300);
@@ -505,17 +535,29 @@ def _render_scroll_if_needed():
         """
     elif scroll_to_page_top:
         script = """
-            var mainSection = window.parent.document.querySelector(
+            var mainSection = document.querySelector(
                 'section[data-testid="stMain"]'
             );
             if (mainSection) {
-                mainSection.scrollTo({top: 0, behavior: 'smooth'});
+                mainSection.scrollTo({top: 0, behavior: 'instant'});
             }
         """
     else:
         script = ""
 
-    components.html(f"<script>(function() {{ {script} }})();</script>", height=0)
+    # position: fixedはドキュメントの通常のフローから外れ、スクロールする
+    # 祖先ではなくビューポート自体を基準に配置されるため、DOM上の実際の
+    # 位置（大きくスクロールした表の近く等）に関わらず常にビューポート内
+    # （左上、0×0）にあるように見せかけられる。nonceはscriptタグの中身を
+    # 毎回変えて再実行を強制するためのもの（詳細はdocstring参照）
+    nonce = st.session_state.get("_scroll_script_nonce", 0) + 1
+    st.session_state["_scroll_script_nonce"] = nonce
+    st.html(
+        f'<div style="position:fixed;top:0;left:0;width:0;height:0;overflow:hidden;">'
+        f"<script>/* {nonce} */(function() {{ {script} }})();</script>"
+        f"</div>",
+        unsafe_allow_javascript=True,
+    )
 
 
 
@@ -836,11 +878,11 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             # 操作するとドラッグした位置は消える
             uirevision=f"{code}-{chart_timeframe}-{period_label}-{display_width_label}",
         ),
-        use_container_width=True,
+        width="stretch",
         config=PLOTLY_CONFIG,
         key=f"price_chart_{key_prefix}_{code}",
     )
-    components.html(
+    st.iframe(
         build_scroll_sync_script(
             chart_df_in_period["date"],
             chart_df_in_period["high"],
@@ -858,7 +900,8 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         ),
         # トラック自体は細い（14px）が、ドラッグ中に多少上下にぶれても
         # このiframe自身の高さの範囲内であればmousemoveを取りこぼさない
-        # ため、少し余裕を持たせた高さにする
+        # ため、少し余裕を持たせた高さにする（2026-08-30改訂:
+        # st.components.v1.html()は非推奨のためst.iframe()に変更）
         height=32,
     )
 
@@ -969,7 +1012,7 @@ with st.sidebar:
     )
     min_market_cap = min_market_cap_oku * 100_000_000
 
-    run_button = st.button("候補を更新", type="primary", use_container_width=True)
+    run_button = st.button("候補を更新", type="primary", width="stretch")
 
 # 個別銘柄検索の判定は、どのタブが表示中でも使えるようタブの外で評価しておく。
 # 判断基準（modules）が未選択でも検索・チャート確認自体はできるようにする
@@ -1040,15 +1083,17 @@ watch_candidates = st.session_state.get("watch_candidates")
 # st.rerun()を挟まずここまで来ている）で立てられる。st.tabs()より前だが
 # scroll_to_page_topが立ってから呼ぶ必要があるため、この位置で呼ぶ
 # （呼び出し自体はスクロール不要な場合も含め毎回同じ形で行う。理由は
-# _render_scroll_if_needed()のdocstring参照）
-_render_scroll_if_needed()
+# _render_scroll_trigger()のdocstring参照。フラグの消費はここで1回だけ行い、
+# 以降は同じ値をタブごとの表の直後にも渡して重ねて呼ぶ）
+SCROLL_TO_CHART, SCROLL_TO_PAGE_TOP = _consume_scroll_flags()
+_render_scroll_trigger(SCROLL_TO_CHART, SCROLL_TO_PAGE_TOP)
 
 tab_scan, tab_trades, tab_watchlist = st.tabs(
     ["スキャン", "売買銘柄", "監視銘柄"],
     # key・on_change="rerun"を指定することで、st.session_state["active_tab"]を
     # 読み書きできるようにする（「候補を更新」クリック時にスキャンタブへ戻す用途）。
     # 以前はこれが原因でタブ・見出しの二重表示を起こしたが、原因は
-    # _render_scroll_if_needed()の呼び出しがst.tabs()より前で不安定に
+    # このスクロールトリガーの呼び出しがst.tabs()より前で不安定に
     # 出現/消失していたこと（st.tabs自体の問題ではなかった）と判明したため、
     # そちらを安定化したうえで再度有効にしている
     key="active_tab",
@@ -1102,7 +1147,7 @@ with tab_scan:
         # （_style_already_watchlisted_rows・_on_candidate_table_select参照）
         st.dataframe(
             _style_already_watchlisted_rows(pd.DataFrame(rows), candidates),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             on_select=lambda: _on_candidate_table_select(table_key, candidates),
             selection_mode="single-row",
@@ -1146,7 +1191,7 @@ with tab_scan:
         # （_style_already_watchlisted_rows・_on_watch_candidate_table_select参照）
         st.dataframe(
             _style_already_watchlisted_rows(pd.DataFrame(watch_rows), watch_candidates),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             on_select=lambda: _on_watch_candidate_table_select(watch_table_key, watch_candidates),
             selection_mode="single-row",
@@ -1162,6 +1207,12 @@ with tab_scan:
     ):
         st.divider()
         st.caption("監視銘柄候補: 該当銘柄はありません。")
+
+    # 候補一覧・監視銘柄候補一覧の表のすぐ下でも同じスクロール処理を重ねて
+    # 呼ぶ（_render_scroll_trigger()のdocstring参照。表の下の方の行を選択した
+    # 場合、この位置はユーザーの現在のスクロール位置に近く、ページ最上部の
+    # 呼び出しだけでは実行されないことがあるため）
+    _render_scroll_trigger(SCROLL_TO_CHART, SCROLL_TO_PAGE_TOP)
 
     # 確保しておいた表示位置に、確定したフォーカス銘柄（検索 or 候補選択）を描画する
     focus_mode = st.session_state.get("focus_mode")
@@ -1272,7 +1323,7 @@ with tab_scan:
                 f"時間足: {add_timeframe_label}"
             )
 
-            if st.button("監視銘柄に追加", use_container_width=True):
+            if st.button("監視銘柄に追加", width="stretch"):
                 # 既に保有中（未決済）の銘柄は、売買銘柄と監視銘柄の二重登録に
                 # なるため追加しない
                 if has_open_trade(add_candidate["code"]):
@@ -1403,7 +1454,7 @@ def _render_trade_table(trades_subset, key_suffix, read_only=False):
         # 引きずって選択が正しく切り替わらない（チェックが更新されず
         # 再実行が終わらない）事象を避ける
         key=f"trade_editor_{key_suffix}_{current_focus_id}",
-        use_container_width=True,
+        width="stretch",
         disabled=disabled_columns,
         column_config={
             "表示": st.column_config.CheckboxColumn(
@@ -1551,6 +1602,11 @@ def _render_trades_section():
     else:
         st.caption("決算済みの銘柄はまだありません。")
 
+    # 表のすぐ下でも同じスクロール処理を重ねて呼ぶ（_render_scroll_trigger()の
+    # docstring参照。決算済みの月が多く表が長い場合、下の方の行を選択すると
+    # ページ最上部の呼び出しだけでは実行されないことがあるため）
+    _render_scroll_trigger(SCROLL_TO_CHART, SCROLL_TO_PAGE_TOP)
+
     focus_id = st.session_state.get("trades_chart_focus_id")
     focus_trade = next((t for t in trades if t["id"] == focus_id), None)
 
@@ -1589,7 +1645,7 @@ def _render_trades_section():
         if st.button(
             "選択した取引を保有中に移動",
             key="move_to_open_trade_button",
-            use_container_width=True,
+            width="stretch",
             help="決算株価の入力を誤った場合の修正用。決算株価と決済日を"
             "クリアし、保有中に戻します",
         ):
@@ -1613,7 +1669,7 @@ def _render_trades_section():
         if st.button(
             "選択した取引を削除",
             key="delete_trade_button",
-            use_container_width=True,
+            width="stretch",
         ):
             delete_trade(focus_trade["id"])
             st.session_state["trades_chart_focus_id"] = None
@@ -1623,7 +1679,7 @@ def _render_trades_section():
         if st.button(
             "選択した取引を監視銘柄に移動",
             key="move_trade_button",
-            use_container_width=True,
+            width="stretch",
             help="登録を間違えた場合の修正用。この取引を削除し、"
             "同じ銘柄・方向・時間足で監視銘柄に登録し直します",
         ):
@@ -1673,7 +1729,7 @@ def _render_watchlist_table(stocks_subset, key_suffix):
         watchlist_display_df,
         # keyにcurrent_focus_idを含める理由は_render_trade_tableのコメント参照
         key=f"watchlist_editor_{key_suffix}_{current_focus_id}",
-        use_container_width=True,
+        width="stretch",
         disabled=["コード", "銘柄名", "方向", "追加日"],
         column_config={
             "表示": st.column_config.CheckboxColumn(
@@ -1754,6 +1810,11 @@ def _render_watchlist_section():
     else:
         st.caption("監視銘柄はまだありません。")
 
+    # 表のすぐ下でも同じスクロール処理を重ねて呼ぶ（_render_scroll_trigger()の
+    # docstring参照。銘柄数が多く表が長い場合、下の方の行を選択すると
+    # ページ最上部の呼び出しだけでは実行されないことがあるため）
+    _render_scroll_trigger(SCROLL_TO_CHART, SCROLL_TO_PAGE_TOP)
+
     focus_id = st.session_state.get("watchlist_chart_focus_id")
     focus_stock = next((w for w in watchlist_stocks if w["id"] == focus_id), None)
 
@@ -1787,7 +1848,7 @@ def _render_watchlist_section():
         if st.button(
             "選択した監視銘柄を優先から外す",
             key="toggle_watchlist_priority_button",
-            use_container_width=True,
+            width="stretch",
             help="優先監視銘柄から通常の監視銘柄に戻します",
         ):
             update_watchlist_priority(focus_stock["id"], False)
@@ -1796,7 +1857,7 @@ def _render_watchlist_section():
         if st.button(
             "選択した監視銘柄を優先監視銘柄に追加",
             key="toggle_watchlist_priority_button",
-            use_container_width=True,
+            width="stretch",
             help="優先監視銘柄セクションに移動します",
         ):
             update_watchlist_priority(focus_stock["id"], True)
