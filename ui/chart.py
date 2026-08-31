@@ -515,12 +515,30 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         const storageKey = {storage_key_json};
         const viewSignature = {view_signature_json};
         // 表示期間の端（表示幅の左右端）のバーの中心座標ちょうどにx軸の端を
-        // 合わせると、そのバー自身の幅の半分が軸の外にはみ出して縦半分しか
-        // 描画されなくなる。バー1本分（暦日換算で概ね1日。build_price_chart()の
-        // 出来高バー幅の設定と対応。dashboard.pyのCHART_BAR_EDGE_PADDINGと
-        // 同じ値）の半分弱を両端の余白として持たせ、矢印キー・ドラッグ・
-        // スクロールバーのどの操作で端まで動かしても端のバーが欠けないようにする
-        const barEdgePaddingMs = 9.6 * 60 * 60 * 1000;
+        // 合わせると、そのバー自身の幅の半分が軸の外にはみ出して半分しか
+        // 描画されなくなる。実際のバー間隔（暦日換算の中央値）の4割を
+        // 両端の余白として持たせ、矢印キー・ドラッグ・スクロールバーの
+        // どの操作で端まで動かしても端のバーが欠けないようにする
+        // （dashboard.pyの_compute_bar_edge_paddingと同じ考え方・倍率。
+        // 2026-08-30改訂: 以前は日足で実測した固定値（9.6時間）だったが、
+        // 週足・月足はバー間隔が1日よりずっと長いため余白が全く足りず、
+        // 矢印キーで動かした先でローソク足の端が半分しか見えない不具合が
+        // あった）
+        function computeMedianGapMs(timestamps) {{
+            if (timestamps.length < 2) return 24 * 60 * 60 * 1000;
+            const gaps = [];
+            for (let i = 1; i < timestamps.length; i++) {{
+                gaps.push(timestamps[i] - timestamps[i - 1]);
+            }}
+            gaps.sort(function(a, b) {{ return a - b; }});
+            const mid = Math.floor(gaps.length / 2);
+            return gaps.length % 2 !== 0
+                ? gaps[mid]
+                : (gaps[mid - 1] + gaps[mid]) / 2;
+        }}
+        const barEdgePaddingMs = computeMedianGapMs(
+            {dates_json}.map(function(d) {{ return new Date(d).getTime(); }})
+        ) * 0.4;
 
         // 現在の表示範囲（カレンダー日付）をsessionStorageへ保存する。
         // 保存先はwindow.parent（メインページ）側にする。このiframe自身は

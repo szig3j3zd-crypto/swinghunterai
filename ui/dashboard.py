@@ -135,14 +135,28 @@ CHART_BARS_PER_CALENDAR_DAY = {
 # 出来高チャート下の日付軸ラベルを表示する
 CHART_TICK_FORMAT_SHORT_WIDTHS = {"3ヶ月"}
 
-# ローソク足・出来高の棒は表示期間の各端（表示幅の左右端）のバーの
-# 中心座標ちょうどにx軸の端を合わせると、そのバー自身の幅の半分が軸の
-# 外にはみ出して縦半分しか描画されなくなる（ui.chart.build_scroll_sync_script
-# のJS側、及びスクロールバーで動かした先でも同様の理由で発生するため、
-# そちらにも同じ値を渡している）。バー1本分（暦日換算で概ね1日、
-# ui.chart.build_price_chartの出来高バー幅の設定と対応）の半分弱を
-# 両端に余白として足し、端のバーが欠けずに全体表示されるようにする
-CHART_BAR_EDGE_PADDING = pd.Timedelta(34560, unit="s")  # 9時間36分（=9.6時間）
+def _compute_bar_edge_padding(dates):
+
+    """
+    表示期間の各端（表示幅の左右端）のバーの中心座標ちょうどにx軸の端を
+    合わせると、そのバー自身の幅の半分が軸の外にはみ出して半分しか
+    描画されなくなる。実際のバー間隔（暦日換算の中央値）の4割を両端に
+    余白として足し、端のバーが欠けずに全体表示されるようにする
+    （ui.chart.build_scroll_sync_scriptのJS側、及び矢印キー・スクロール
+    バーで動かした先でも同様の理由で発生するため、同じ考え方でJS側でも
+    バーの実データから同じ倍率を計算している）
+
+    2026-08-30改訂: 以前は日足で実測した固定値（9時間36分＝1日の4割）
+    だったが、週足・月足はバー間隔が1日よりずっと長いため、この固定値
+    では余白が全く足りず、矢印キーで動かした先や初期表示でローソク足の
+    端が半分しか見えない不具合があった。バー間隔の中央値（日足なら
+    約1日、週足なら約7日、月足なら約30日）から都度計算することで、
+    どの時間足でも同じ比率の余白になるようにした
+    """
+
+    diffs = dates.diff().dropna()
+    typical_gap = diffs.median() if not diffs.empty else pd.Timedelta(days=1)
+    return typical_gap * 0.4
 
 
 def _period_label_to_offset(label):
@@ -889,10 +903,11 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     )
     # y_range/volume_rangeは実際の表示対象バー（window_start_date〜
     # window_end_date）だけから算出したいのでcompute_visible_window()には
-    # 渡さず、表示用のx_rangeにのみ余白を足す（CHART_BAR_EDGE_PADDING参照）
+    # 渡さず、表示用のx_rangeにのみ余白を足す（_compute_bar_edge_padding参照）
+    bar_edge_padding = _compute_bar_edge_padding(chart_df_in_period["date"])
     x_range = [
-        x_range[0] - CHART_BAR_EDGE_PADDING,
-        x_range[1] + CHART_BAR_EDGE_PADDING,
+        x_range[0] - bar_edge_padding,
+        x_range[1] + bar_edge_padding,
     ]
 
     st.plotly_chart(
@@ -1631,13 +1646,24 @@ def _render_trades_section():
     closed_trades = [trade for trade in trades if trade["exit_price"] is not None]
 
     st.markdown("#### 保有中")
-    if open_trades:
-        _render_trade_table(open_trades, key_suffix="open")
-        # スキャンタブの候補一覧（「○件の候補」）と同様、件数を表示する
-        # （2026-08-30追加）
-        st.caption(f"{len(open_trades)}件の保有銘柄")
+    # ロングとショートを同じ表に混在させず、別々の表に分けて表示する
+    # （2026-08-30改訂）
+    open_long_trades = [t for t in open_trades if t["direction"] == "long"]
+    open_short_trades = [t for t in open_trades if t["direction"] == "short"]
+
+    st.markdown("##### ロング")
+    if open_long_trades:
+        _render_trade_table(open_long_trades, key_suffix="open_long")
+        st.caption(f"{len(open_long_trades)}件の保有銘柄（ロング）")
     else:
-        st.caption("現在保有中の銘柄はありません。")
+        st.caption("現在保有中のロング銘柄はありません。")
+
+    st.markdown("##### ショート")
+    if open_short_trades:
+        _render_trade_table(open_short_trades, key_suffix="open_short")
+        st.caption(f"{len(open_short_trades)}件の保有銘柄（ショート）")
+    else:
+        st.caption("現在保有中のショート銘柄はありません。")
 
     st.markdown("#### 決算済み")
     if closed_trades:
@@ -1856,21 +1882,44 @@ def _render_watchlist_section():
     priority_stocks = [w for w in watchlist_stocks if w["priority"]]
     normal_stocks = [w for w in watchlist_stocks if not w["priority"]]
 
+    # ロングとショートを同じ表に混在させず、別々の表に分けて表示する
+    # （2026-08-30改訂）
+    priority_long_stocks = [w for w in priority_stocks if w["direction"] == "long"]
+    priority_short_stocks = [w for w in priority_stocks if w["direction"] == "short"]
+    normal_long_stocks = [w for w in normal_stocks if w["direction"] == "long"]
+    normal_short_stocks = [w for w in normal_stocks if w["direction"] == "short"]
+
     st.markdown("#### 優先監視銘柄")
-    if priority_stocks:
-        _render_watchlist_table(priority_stocks, key_suffix="priority")
-        # スキャンタブの候補一覧（「○件の候補」）と同様、件数を表示する
-        # （2026-08-30追加）
-        st.caption(f"{len(priority_stocks)}件の優先監視銘柄")
+
+    st.markdown("##### ロング")
+    if priority_long_stocks:
+        _render_watchlist_table(priority_long_stocks, key_suffix="priority_long")
+        st.caption(f"{len(priority_long_stocks)}件の優先監視銘柄（ロング）")
     else:
-        st.caption("優先監視銘柄はまだありません。")
+        st.caption("優先監視銘柄（ロング）はまだありません。")
+
+    st.markdown("##### ショート")
+    if priority_short_stocks:
+        _render_watchlist_table(priority_short_stocks, key_suffix="priority_short")
+        st.caption(f"{len(priority_short_stocks)}件の優先監視銘柄（ショート）")
+    else:
+        st.caption("優先監視銘柄（ショート）はまだありません。")
 
     st.markdown("#### 監視銘柄")
-    if normal_stocks:
-        _render_watchlist_table(normal_stocks, key_suffix="normal")
-        st.caption(f"{len(normal_stocks)}件の監視銘柄")
+
+    st.markdown("##### ロング")
+    if normal_long_stocks:
+        _render_watchlist_table(normal_long_stocks, key_suffix="normal_long")
+        st.caption(f"{len(normal_long_stocks)}件の監視銘柄（ロング）")
     else:
-        st.caption("監視銘柄はまだありません。")
+        st.caption("監視銘柄（ロング）はまだありません。")
+
+    st.markdown("##### ショート")
+    if normal_short_stocks:
+        _render_watchlist_table(normal_short_stocks, key_suffix="normal_short")
+        st.caption(f"{len(normal_short_stocks)}件の監視銘柄（ショート）")
+    else:
+        st.caption("監視銘柄（ショート）はまだありません。")
 
     # 表のすぐ下でも同じスクロール処理を重ねて呼ぶ（_render_scroll_trigger()の
     # docstring参照。銘柄数が多く表が長い場合、下の方の行を選択すると
