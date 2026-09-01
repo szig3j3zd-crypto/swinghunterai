@@ -514,6 +514,31 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         const thumb = document.getElementById("sh-scrollbar-thumb");
         const storageKey = {storage_key_json};
         const viewSignature = {view_signature_json};
+
+        // 日付文字列をタイムゾーンの影響を受けずにUTCエポックミリ秒として
+        // 解釈する。Pythonから渡ってくる日付文字列（dates_json等）や
+        // Plotly自身が返すxaxis.rangeの文字列にはタイムゾーン情報が無く
+        // （naive）、Plotly側もこれらを暦上の数字としてそのまま扱う
+        // （タイムゾーン変換はしない）。素朴に`new Date(dateStr)`で解釈
+        // すると、区切りが空白の場合はブラウザのローカルタイムゾーンとして
+        // パースされ（ISO 8601の"T"区切りでタイムゾーン指定が無い場合も
+        // 同様にローカル時刻扱い）、UTC以外のタイムゾーン（日本ならUTC+9）
+        // では実際にPlotlyへ渡す値がその分ズレてしまう。実機で発生した
+        // 不具合（2026-08-31）: 矢印キーでチャートを動かすたびに9時間分
+        // ズレて、端のバーに持たせたはずの余白がほぼ消え、ローソク足の
+        // 端が半分しか見えなくなっていた。末尾の"Z"やオフセットは無視して
+        // 見た目の数字をそのままUTCとして解釈することで、パース→
+        // toISOString()での再文字列化を挟んでも数字が変わらないようにする
+        function parseAsUTC(dateStr) {{
+            const m = String(dateStr).match(
+                /^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})[T ](\\d{{2}}):(\\d{{2}}):(\\d{{2}})/
+            );
+            if (!m) return new Date(dateStr).getTime();
+            return Date.UTC(
+                Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+                Number(m[4]), Number(m[5]), Number(m[6])
+            );
+        }}
         // 表示期間の端（表示幅の左右端）のバーの中心座標ちょうどにx軸の端を
         // 合わせると、そのバー自身の幅の半分が軸の外にはみ出して半分しか
         // 描画されなくなる。実際のバー間隔（暦日換算の中央値）の4割を
@@ -537,7 +562,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 : (gaps[mid - 1] + gaps[mid]) / 2;
         }}
         const barEdgePaddingMs = computeMedianGapMs(
-            {dates_json}.map(function(d) {{ return new Date(d).getTime(); }})
+            {dates_json}.map(function(d) {{ return parseAsUTC(d); }})
         ) * 0.4;
 
         // 現在の表示範囲（カレンダー日付）をsessionStorageへ保存する。
@@ -588,8 +613,8 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
 
             const minMs = scrollState.barTimestamps[0] - barEdgePaddingMs;
             const maxMs = scrollState.barTimestamps[scrollState.barTimestamps.length - 1] + barEdgePaddingMs;
-            let startMs = new Date(saved.start).getTime();
-            let endMs = new Date(saved.end).getTime();
+            let startMs = parseAsUTC(saved.start);
+            let endMs = parseAsUTC(saved.end);
             if (!(startMs < endMs)) return;
 
             // 表示期間の変更・日足/週足/月足の切替で、保存済みの範囲が
@@ -616,8 +641,8 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 const nowRange = gd._fullLayout && gd._fullLayout.xaxis
                     ? gd._fullLayout.xaxis.range : null;
                 const alreadyThere = nowRange
-                    && Math.abs(new Date(nowRange[0]).getTime() - startMs) < 1000
-                    && Math.abs(new Date(nowRange[1]).getTime() - endMs) < 1000;
+                    && Math.abs(parseAsUTC(nowRange[0]) - startMs) < 1000
+                    && Math.abs(parseAsUTC(nowRange[1]) - endMs) < 1000;
                 if (alreadyThere) return;
                 window.parent.Plotly.relayout(gd, {{"xaxis.range": targetRange}});
             }}
@@ -707,8 +732,8 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             const minMs = scrollState.barTimestamps[0];
             const maxMs = scrollState.barTimestamps[scrollState.barTimestamps.length - 1];
             const totalMs = Math.max(maxMs - minMs, 1);
-            const curStartMs = new Date(range[0]).getTime();
-            const curEndMs = new Date(range[1]).getTime();
+            const curStartMs = parseAsUTC(range[0]);
+            const curEndMs = parseAsUTC(range[1]);
 
             let leftPct = ((curStartMs - minMs) / totalMs) * 100;
             let widthPct = ((curEndMs - curStartMs) / totalMs) * 100;
@@ -777,7 +802,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
 
                 saveWindow(curRange);
 
-                const startMs = new Date(curRange[0]).getTime();
+                const startMs = parseAsUTC(curRange[0]);
                 let startIndex = lowerBound(scrollState.barTimestamps, startMs);
                 startIndex = Math.max(0, Math.min(startIndex, scrollState.maxStartIndex));
                 scrollState.startIndex = startIndex;
@@ -803,7 +828,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             currentGd = gd;
             currentScrollState = {{
                 barDates: barDates,
-                barTimestamps: barDates.map(function(d) {{ return new Date(d).getTime(); }}),
+                barTimestamps: barDates.map(function(d) {{ return parseAsUTC(d); }}),
                 highs: {highs_json},
                 lows: {lows_json},
                 volumes: {volumes_json},
@@ -872,8 +897,8 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     scrollState.barDates.length - 1
                 );
                 keyMoveInFlight = true;
-                const rangeStartMs = new Date(scrollState.barDates[nextIndex]).getTime() - barEdgePaddingMs;
-                const rangeEndMs = new Date(scrollState.barDates[endIndex]).getTime() + barEdgePaddingMs;
+                const rangeStartMs = parseAsUTC(scrollState.barDates[nextIndex]) - barEdgePaddingMs;
+                const rangeEndMs = parseAsUTC(scrollState.barDates[endIndex]) + barEdgePaddingMs;
                 window.parent.Plotly.relayout(target, {{
                     "xaxis.range": [
                         new Date(rangeStartMs).toISOString(),
@@ -941,8 +966,8 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     gd: liveGd,
                     startClientX: e.clientX,
                     startRangeMs: [
-                        new Date(range[0]).getTime(),
-                        new Date(range[1]).getTime(),
+                        parseAsUTC(range[0]),
+                        parseAsUTC(range[1]),
                     ],
                     trackWidthPx: track.getBoundingClientRect().width,
                     minMs: currentScrollState.barTimestamps[0] - barEdgePaddingMs,
@@ -1004,7 +1029,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 const maxMs = currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1]
                     + barEdgePaddingMs;
                 const clickMs = minMs + ((e.clientX - rect.left) / rect.width) * (maxMs - minMs);
-                const width = new Date(range[1]).getTime() - new Date(range[0]).getTime();
+                const width = parseAsUTC(range[1]) - parseAsUTC(range[0]);
                 let newStart = clickMs - width / 2;
                 let newEnd = clickMs + width / 2;
                 if (newStart < minMs) {{
