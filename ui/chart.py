@@ -870,23 +870,6 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             const previousGd = currentGd;
             currentGd = gd;
 
-            // 指2本でのピンチズームは、Plotly側の設定scrollZoomが有効な
-            // 場合のみ動く。ただしこの設定はPCでのマウスホイール操作にも
-            // 影響し、有効にするとチャート上でのホイール操作がページ
-            // スクロールではなくズームになってしまう（PCでは今まで通り
-            // ページスクロールのままにしたいという要望のため避けたい）。
-            // config={{"scrollZoom": ...}}はst.plotly_chart呼び出し時に
-            // Python側で固定されるためタッチデバイスかどうかで出し分け
-            // られず、代わりに描画後にgd._context（Plotly.jsが実際の
-            // ジェスチャー判定時に参照する内部設定）をタッチデバイスの
-            // ときだけ直接書き換える。タッチ対応の判定は
-            // navigator.maxTouchPoints（Pointer Events仕様。タッチ非対応の
-            // PCでは0。navigatorはグローバルAPIのためiframe内でも取得できる）
-            // を使う
-            if (gd._context && navigator.maxTouchPoints > 0) {{
-                gd._context.scrollZoom = true;
-            }}
-
             currentScrollState = {{
                 barDates: barDates,
                 barTimestamps: barDates.map(function(d) {{ return parseAsUTC(d); }}),
@@ -920,6 +903,98 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             }}
 
             attachRelayoutListener(gd, currentScrollState);
+
+            // 指2本でのピンチズーム。Plotly標準のタッチ処理（scrollZoom設定や
+            // 内部実装）に頼ると、バージョンや環境によって実際に効くか
+            // 確証が持てないため、既存のスクロールバーと同じ考え方で
+            // タッチイベントから直接計算しPlotly.relayoutを呼ぶ、
+            // 自前の実装にする。これによりPlotly.relayoutが発火する
+            // plotly_relayoutイベント経由で、既存のattachRelayoutListener
+            // （価格軸・出来高軸の再フィット、スクロールバー更新、
+            // visibleBarCount更新、sessionStorageへの保存）がそのまま働く
+            //
+            // captureフェーズで登録し、指2本のときだけpreventDefault・
+            // stopPropagationしてPlotly自身のドラッグ処理（.nsewdrag側の
+            // 1本指パン用ハンドラ）と競合しないようにする。指1本のときは
+            // 何もせず素通しし、既存の1本指スワイプ（Plotly標準の
+            // dragmode="pan"）に影響しない
+            let pinchState = null;
+
+            function touchDistance(touches) {{
+                const dx = touches[0].clientX - touches[1].clientX;
+                const dy = touches[0].clientY - touches[1].clientY;
+                return Math.sqrt(dx * dx + dy * dy);
+            }}
+
+            gd.addEventListener("touchstart", function(e) {{
+                if (e.touches.length !== 2) {{
+                    pinchState = null;
+                    return;
+                }}
+                const range = gd._fullLayout && gd._fullLayout.xaxis
+                    ? gd._fullLayout.xaxis.range : null;
+                if (!range) return;
+                pinchState = {{
+                    startDistance: touchDistance(e.touches),
+                    startRangeMs: [parseAsUTC(range[0]), parseAsUTC(range[1])],
+                }};
+                e.preventDefault();
+                e.stopPropagation();
+            }}, {{ passive: false, capture: true }});
+
+            gd.addEventListener("touchmove", function(e) {{
+                if (!pinchState || e.touches.length !== 2 || !window.parent.Plotly) {{
+                    return;
+                }}
+                e.preventDefault();
+                e.stopPropagation();
+
+                const distance = touchDistance(e.touches);
+                if (distance <= 0 || pinchState.startDistance <= 0) return;
+                // scaleが1より大きい＝指を広げた＝ズームイン（短い期間）、
+                // 1より小さい＝指をつまんだ＝ズームアウト（長い期間）
+                const scale = distance / pinchState.startDistance;
+
+                const [startMs, endMs] = pinchState.startRangeMs;
+                const centerMs = (startMs + endMs) / 2;
+                const halfWidthMs = (endMs - startMs) / 2 / scale;
+
+                const minMs = currentScrollState.barTimestamps[0] - barEdgePaddingMs;
+                const maxMs = currentScrollState.barTimestamps[
+                    currentScrollState.barTimestamps.length - 1
+                ] + barEdgePaddingMs;
+
+                let newStart = centerMs - halfWidthMs;
+                let newEnd = centerMs + halfWidthMs;
+                const width = newEnd - newStart;
+                if (width >= maxMs - minMs) {{
+                    newStart = minMs;
+                    newEnd = maxMs;
+                }} else {{
+                    if (newStart < minMs) {{
+                        newStart = minMs;
+                        newEnd = newStart + width;
+                    }}
+                    if (newEnd > maxMs) {{
+                        newEnd = maxMs;
+                        newStart = newEnd - width;
+                    }}
+                }}
+
+                window.parent.Plotly.relayout(gd, {{
+                    "xaxis.range": [
+                        new Date(newStart).toISOString(),
+                        new Date(newEnd).toISOString(),
+                    ],
+                }});
+            }}, {{ passive: false, capture: true }});
+
+            gd.addEventListener("touchend", function(e) {{
+                if (e.touches.length < 2) pinchState = null;
+            }}, {{ capture: true }});
+            gd.addEventListener("touchcancel", function() {{
+                pinchState = null;
+            }}, {{ capture: true }});
 
             // 保存済みの表示範囲があれば、Python側が渡した「最新側」の
             // 初期範囲を上書きして復元する（上のattachRelayoutListener
