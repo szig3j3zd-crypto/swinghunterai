@@ -988,6 +988,48 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     )
 
 
+def _ensure_static_icon_tags():
+
+    """
+    Streamlitのフロントエンドのシェル（static/index.html）に、
+    apple-touch-icon・manifestのlinkタグを直接書き込む
+
+    st.iframe経由でJSから<head>へ後付けする方法も試したが、iOS Safari
+    （WebKitベースの他ブラウザ、Edge for iOS等も同様）の「ホーム画面に
+    追加」は最初に返るHTML（JS実行前の状態）にあるapple-touch-iconタグ
+    しか見ておらず、後から追加したタグは反映されなかった（2026-09-05
+    実機で確認）。index.html自体を書き換えれば最初のレスポンスに
+    含まれるため確実に反映される。
+
+    Streamlit Community Cloudは毎回requirements.txtからまっさらな環境を
+    作り直す（=index.htmlも毎回未編集の状態に戻る）ため、この書き込みは
+    アプリ起動のたびに（冪等に）行う必要がある。マーカーコメントで
+    二重書き込みを防ぐ
+    """
+
+    try:
+        index_path = Path(st.__file__).resolve().parent / "static" / "index.html"
+        html = index_path.read_text(encoding="utf-8")
+
+        marker = "<!-- swinghunterai-icons -->"
+        if marker in html:
+            return
+
+        tags = (
+            f"{marker}\n"
+            '    <link rel="apple-touch-icon" '
+            'href="/app/static/apple-touch-icon.png" />\n'
+            '    <link rel="manifest" href="/app/static/manifest.json" />\n'
+            '    <meta name="theme-color" content="#0e1117" />\n'
+            "  </head>"
+        )
+        index_path.write_text(html.replace("</head>", tags, 1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+_ensure_static_icon_tags()
+
 # CREATE TABLE IF NOT EXISTS・列追加マイグレーションとも冪等なため、
 # 起動のたびに呼んでも問題ない
 create_trades_table()
@@ -999,53 +1041,6 @@ st.set_page_config(
     layout="wide",
 )
 st.markdown(PLOTLY_CURSOR_OVERRIDE_CSS, unsafe_allow_html=True)
-
-# スマホでブラウザの「ホーム画面に追加」をしたときのアイコンを独自の画像に
-# するための設定。Streamlitはページの<head>を直接編集する手段を提供して
-# いないため、st.iframe（同一オリジンアクセス可能なiframeとして埋め込む）
-# 経由でwindow.parent.document.head（アプリ本体のhead）へlink/metaタグを
-# 追加する。iOS Safariはapple-touch-icon、Android
-# Chromeはmanifest.jsonのiconsをそれぞれ参照する。再実行のたびにこの
-# st.iframe呼び出し自体は再実行されるため、二重追加を防ぐガード
-# （querySelectorで既存チェック）を入れている
-st.iframe(
-    """
-    <script>
-    (function() {
-        const doc = window.parent.document;
-        const head = doc.head;
-
-        function ensureLink(rel, href, attrs) {
-            if (doc.querySelector(`link[rel="${rel}"]`)) return;
-            const link = doc.createElement("link");
-            link.rel = rel;
-            link.href = href;
-            if (attrs) {
-                Object.keys(attrs).forEach(function(key) {
-                    link.setAttribute(key, attrs[key]);
-                });
-            }
-            head.appendChild(link);
-        }
-
-        ensureLink("apple-touch-icon", "/app/static/apple-touch-icon.png");
-        ensureLink("manifest", "/app/static/manifest.json");
-        ensureLink(
-            "icon", "/app/static/favicon-32.png",
-            {type: "image/png", sizes: "32x32"}
-        );
-
-        if (!doc.querySelector('meta[name="theme-color"]')) {
-            const meta = doc.createElement("meta");
-            meta.name = "theme-color";
-            meta.content = "#0e1117";
-            head.appendChild(meta);
-        }
-    })();
-    </script>
-    """,
-    height=1,
-)
 
 st.title("株探し")
 
