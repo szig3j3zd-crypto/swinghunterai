@@ -105,10 +105,10 @@ TIMEFRAME_LABELS_INVERSE = {v: k for k, v in TIMEFRAME_LABELS.items()}
 CHART_PERIOD_OPTIONS = ["1ヶ月", "3ヶ月", "6ヶ月"] + [f"{n}年" for n in range(1, 11)]
 
 # チャート画面に一度に表示する幅（表示期間の範囲内を、この幅を保ったまま
-# 横スクロールして見る）の選択肢。「nヶ月」は3〜11ヶ月を1ヶ月刻み、
+# 横スクロールして見る）の選択肢。「nヶ月」は2〜11ヶ月を1ヶ月刻み、
 # 「n年」は1〜5年を1年刻み
 CHART_DISPLAY_WIDTH_OPTIONS = (
-    [f"{n}ヶ月" for n in range(3, 12)] + [f"{n}年" for n in range(1, 6)]
+    [f"{n}ヶ月" for n in range(2, 12)] + [f"{n}年" for n in range(1, 6)]
 )
 
 # 表示期間は日足/週足/月足で切り替えても変えない（値も選択状態も共通）。
@@ -133,7 +133,7 @@ CHART_BARS_PER_CALENDAR_DAY = {
 
 # 日単位で見たい短い表示幅では「月/日」、それより長い表示幅では「年/月」で
 # 出来高チャート下の日付軸ラベルを表示する
-CHART_TICK_FORMAT_SHORT_WIDTHS = {"3ヶ月"}
+CHART_TICK_FORMAT_SHORT_WIDTHS = {"2ヶ月", "3ヶ月"}
 
 def _compute_bar_edge_padding(dates):
 
