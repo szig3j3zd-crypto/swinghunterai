@@ -825,6 +825,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             // gdの_fullLayout等の内部状態も失われる）、gdに直接ぶら下げると
             // 後から参照したときに既に無効なdivを見てしまうため
             const barDates = {dates_json};
+            const previousGd = currentGd;
             currentGd = gd;
             currentScrollState = {{
                 barDates: barDates,
@@ -844,7 +845,17 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 window.parent.__swingHunterActiveScrollState = currentScrollState;
             }}
             gd.addEventListener("mouseenter", markActive);
-            if (gd.matches(":hover")) {{
+            // MAチェックボックスの切替等でチャートdivがStreamlitに作り直され
+            // ても（Plotlyの描画領域はマウス位置に無関係に再生成される）、
+            // 直前まで矢印キーの対象だったチャート（=このsetup()呼び出しの
+            // 前のcurrentGd）が今回作り直された当のチャートであれば、
+            // マウスをチャート上へ動かし直させずに参照を新しいdivへ引き継ぐ。
+            // これをしないと__swingHunterActiveChartが破棄済み（detached）の
+            // 古いdivを指したままになり、Plotly.relayout()がそのdetachedな
+            // divに対して呼ばれて何も起きず、マウスをチャートへ戻すまで
+            // 矢印キーが無反応になる不具合があった（実際に発生・再現済み）
+            if (gd.matches(":hover")
+                    || (previousGd && window.parent.__swingHunterActiveChart === previousGd)) {{
                 markActive();
             }}
 
