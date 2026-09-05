@@ -930,6 +930,21 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 }}
                 pendingKeyIndex = nextIndex;
                 e.preventDefault();
+                // stopImmediatePropagationが必要（stopPropagationだけでは
+                // 不十分）。st.tabs()の実装（React Aria）は、タブの矢印キー
+                // 切替をwindow.parent.documentへの別のkeydownリスナーで
+                // 実装しており、それが我々のリスナーと同じdocumentノードの
+                // 同じキャプチャフェーズに登録されている。stopPropagation()は
+                // 別ノードへの伝播しか止めず、同一ノード上の他リスナーには
+                // 効かないため、直前にフォーカスされていたタブボタン
+                // （スキャン/売買銘柄/監視銘柄）が矢印キーで切り替わって
+                // しまっていた（実際に発生・stopPropagationだけでは
+                // 直らないことを確認済み）。チャート上をクリックしても
+                // Plotlyの描画領域はフォーカス不可のため直前のタブボタンの
+                // フォーカスが残り続け、この競合が起きていた（チャート外
+                // クリックではタブのフォーカスが外れるため発生しない）。
+                // 常に矢印キーはチャート移動を優先する
+                e.stopImmediatePropagation();
 
                 if (keyMoveInFlight) return;
                 applyPendingKeyMove(target, scrollState);
