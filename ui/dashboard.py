@@ -207,6 +207,26 @@ def _closest_width_label_for_bar_count(target_bar_count, timeframe):
     )
 
 
+def _is_mobile_viewport():
+
+    """
+    User-Agentからスマホでのアクセスかどうかを判定する
+
+    株価チャート（_render_chart_block）の高さを、スマホでは画面幅に対して
+    縦長になりすぎないよう縮めるために使う。JS側からチャートの高さを
+    後から書き換える方式も試したが、st.plotly_chartが外部からの高さ変更を
+    検知するたびに元の高さへ戻してしまい（ちらつきの原因になり）安定
+    しなかったため、最初からPython側で小さい高さを生成する方式にした。
+    "Mobi"はiPhone・Androidスマホの主要なUAに共通して含まれる文字列
+    （タブレットのUAには含まれないことが多く、その場合はPC同様の
+    高さになる）
+    """
+
+    user_agent = (st.context.headers or {}).get("User-Agent", "")
+
+    return "Mobi" in user_agent
+
+
 def _combine_universes(labels):
 
     """
@@ -910,6 +930,12 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         x_range[1] + bar_edge_padding,
     ]
 
+    # スマホでは画面幅に対してデフォルトの高さ（680px/500px）だと縦長すぎて
+    # 見づらいため、6割程度に縮める（_is_mobile_viewport参照）
+    chart_height = None
+    if _is_mobile_viewport():
+        chart_height = round((680 if show_volume else 500) * 0.6)
+
     st.plotly_chart(
         build_price_chart(
             chart_df_in_period,
@@ -920,6 +946,7 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             y_range=y_range,
             volume_range=volume_range,
             show_hover_info=show_hover_info,
+            height=chart_height,
             tick_format=(
                 "%m/%d"
                 if display_width_label in CHART_TICK_FORMAT_SHORT_WIDTHS

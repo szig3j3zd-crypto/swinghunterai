@@ -194,7 +194,7 @@ def _build_hover_text(df, visible_ma, show_volume):
 def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True,
                        x_range=None, y_range=None, volume_range=None,
                        uirevision=None, show_hover_info=True,
-                       tick_format="%Y/%m/%d"):
+                       tick_format="%Y/%m/%d", height=None):
 
     """
     ローソク足・移動平均線・出来高のチャートを作る
@@ -237,6 +237,12 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
         出来高チャート下の日付軸ラベルのd3-time-format文字列。表示期間が
         短い（日単位で見たい）場合は"%m/%d"、長い場合は"%Y/%m"など、
         呼び出し側（表示期間の選択）に応じて渡す
+
+    height
+        チャートの高さ（ピクセル）。Noneなら既定値（出来高ありなら680、
+        なしなら500）。スマホでは画面幅に対して既定値が縦長すぎて
+        見づらいため、呼び出し側（dashboard.py）がUser-Agentから
+        判定して小さい値を渡す
 
     Returns
     -------
@@ -352,7 +358,7 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
         )
 
     fig.update_layout(
-        height=680 if show_volume else 500,
+        height=height if height is not None else (680 if show_volume else 500),
         margin=dict(l=40, r=20, t=10, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         xaxis_rangeslider_visible=False,
@@ -579,6 +585,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         const barEdgePaddingMs = computeMedianGapMs(
             {dates_json}.map(function(d) {{ return parseAsUTC(d); }})
         ) * 0.4;
+
 
         // 現在の表示範囲（カレンダー日付）をsessionStorageへ保存する。
         // 保存先はwindow.parent（メインページ）側にする。このiframe自身は
