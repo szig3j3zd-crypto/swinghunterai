@@ -1,6 +1,6 @@
 import sqlite3
 
-from database.db import create_connection
+from database.db import create_connection, sync_connection
 
 
 def create_table():
@@ -126,6 +126,7 @@ def add_watchlist_stock(code, company_name, direction, timeframe, added_date,
     )
 
     conn.commit()
+    sync_connection(conn)
     conn.close()
 
     return True
@@ -146,6 +147,7 @@ def update_watchlist_timeframe(watchlist_id, timeframe):
     )
 
     conn.commit()
+    sync_connection(conn)
     conn.close()
 
 
@@ -164,6 +166,7 @@ def update_watchlist_priority(watchlist_id, priority):
     )
 
     conn.commit()
+    sync_connection(conn)
     conn.close()
 
 
@@ -182,6 +185,7 @@ def delete_watchlist_stock(watchlist_id):
     )
 
     conn.commit()
+    sync_connection(conn)
     conn.close()
 
 
@@ -210,6 +214,7 @@ def delete_watchlist_stocks_by_code(code):
     deleted_count = cursor.rowcount
 
     conn.commit()
+    sync_connection(conn)
     conn.close()
 
     return deleted_count

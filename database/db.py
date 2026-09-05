@@ -57,3 +57,20 @@ def create_connection():
         )
 
     return libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+
+
+def sync_connection(conn):
+    """
+    書き込み後にEmbedded Replicaの変更を即座にTursoへ反映させる。
+
+    Embedded Replicaはsync_interval秒ごとのバックグラウンド同期に任せる作りだが、
+    各repository関数は書き込み直後に接続を閉じるため、次の同期が発火する前に
+    接続が切れ、スマホ側（Turso直結）に反映されないことがある。close()の前に
+    明示的に呼ぶことでタイマー任せにしない。sqlite3.Connection（テスト実行時・
+    Turso未設定時）にはsync()が無いため何もしない
+    """
+
+    sync = getattr(conn, "sync", None)
+
+    if sync:
+        sync()

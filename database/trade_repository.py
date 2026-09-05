@@ -1,6 +1,6 @@
 import sqlite3
 
-from database.db import create_connection
+from database.db import create_connection, sync_connection
 
 
 def create_table():
@@ -117,6 +117,7 @@ def add_trade(code, company_name, direction, timeframe, trade_date,
     )
 
     conn.commit()
+    sync_connection(conn)
     conn.close()
 
 
@@ -151,6 +152,7 @@ def update_trade(trade_id, entry_price, exit_price, quantity, timeframe,
     )
 
     conn.commit()
+    sync_connection(conn)
     conn.close()
 
 
@@ -169,6 +171,7 @@ def delete_trade(trade_id):
     )
 
     conn.commit()
+    sync_connection(conn)
     conn.close()
 
 
