@@ -72,11 +72,25 @@ PLOTLY_CONFIG = {
     "displaylogo": False,
     "locale": "ja",
     "locales": PLOTLY_JA_LOCALE,
+    # ダブルタップ/ダブルクリックでの表示範囲全体リセットを無効化する。
+    # このチャートは表示期間・表示幅セレクトボックスやスクロールバーで
+    # 独自に表示範囲を管理しており、Plotly標準のリセットが働くと、
+    # スマホでの誤操作（意図しない連続タップ）で全期間表示に飛んでしまう
+    # （2026-09-05、スマホ実機で発生確認）
+    "doubleClick": False,
 }
 
 # dragmode="zoom"のとき、Plotlyはチャート上のマウスカーソルを標準で十字（crosshair）
 # に変える。矢印のままにしたいという要望のため、CSSでカーソル形状を上書きする。
 # ドラッグでのズーム機能自体はdragmodeの設定のままなので変わらない。
+#
+# touch-action: noneは、スマホでチャート上を1本指でスワイプしたときに
+# ブラウザ標準のページスクロールに奪われず、Plotly自身のドラッグ処理
+# （dragmode="pan"）に渡すためのもの。これが無いと、タッチ操作が
+# Plotlyのドラッグ判定に届く前にブラウザがページスクロールと解釈してしまい、
+# チャート上でスワイプしてもページ全体が動くだけでチャートは反応しない
+# （2026-09-05、スマホ実機で発生確認）
+#
 # st.markdown(PLOTLY_CURSOR_OVERRIDE_CSS, unsafe_allow_html=True) をアプリ起動時に
 # 一度呼び出せば、ページ内の全Plotlyチャートに適用される
 PLOTLY_CURSOR_OVERRIDE_CSS = """
@@ -84,6 +98,7 @@ PLOTLY_CURSOR_OVERRIDE_CSS = """
 .js-plotly-plot .nsewdrag,
 .js-plotly-plot .cursor-crosshair {
     cursor: default !important;
+    touch-action: none !important;
 }
 </style>
 """
@@ -701,11 +716,17 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             return lo;
         }}
 
-        function computeYRanges(scrollState, startIndex) {{
-            const endIndex = Math.min(
-                startIndex + scrollState.visibleBarCount - 1,
-                scrollState.barDates.length - 1
-            );
+        // 指定した時刻（ミリ秒）以前の最後のバーのインデックスを求める
+        // （ピンチズーム等で表示範囲の右端が変わったときの終端バーを
+        // 特定するため。lowerBoundは「以上」の最初の位置を返すため、
+        // ちょうどの一致でなければ1つ手前に戻す）
+        function indexAtOrBefore(sortedMs, targetMs) {{
+            let idx = lowerBound(sortedMs, targetMs);
+            if (idx >= sortedMs.length || sortedMs[idx] > targetMs) idx -= 1;
+            return idx;
+        }}
+
+        function computeYRanges(scrollState, startIndex, endIndex) {{
             let lowMin = Infinity;
             let highMax = -Infinity;
             let volMax = -Infinity;
@@ -777,7 +798,8 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
 
         function attachRelayoutListener(gd, scrollState) {{
             // マウスドラッグ（Plotly標準のdragmode="pan"）・スクロールバー・
-            // 矢印キーのいずれでx軸レンジが変わった場合も、Plotlyが発火する
+            // 矢印キー・指2本でのピンチズーム（Plotly標準のタッチ操作）の
+            // いずれでx軸レンジが変わった場合も、Plotlyが発火する
             // plotly_relayoutイベントを起点に価格軸・出来高軸を再フィット
             // し、スクロールバーのつまみも合わせて更新する。このハンドラは
             // 今回のgd・scrollStateを直接参照するクロージャなので、再描画の
@@ -802,12 +824,32 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
 
                 saveWindow(curRange);
 
+                // ピンチズームは表示範囲の「幅」自体を変える（ドラッグ・
+                // 矢印キー・スクロールバーは位置だけを変え、幅は
+                // setup()時点のvisibleBarCountのまま固定という前提だった）。
+                // そのため両端を実際のxaxis.rangeから毎回求め直し、
+                // visibleBarCount・maxStartIndexもここで更新する。
+                // これを固定値のままにすると、ピンチでズームしても
+                // 価格軸・出来高軸が元の幅の本数のまま再フィットされて
+                // ズレたり、その後の矢印キー移動が元の幅に戻ってしまう
                 const startMs = parseAsUTC(curRange[0]);
-                let startIndex = lowerBound(scrollState.barTimestamps, startMs);
-                startIndex = Math.max(0, Math.min(startIndex, scrollState.maxStartIndex));
+                const endMs = parseAsUTC(curRange[1]);
+                let startIndex = Math.max(0, Math.min(
+                    lowerBound(scrollState.barTimestamps, startMs),
+                    scrollState.barTimestamps.length - 1
+                ));
+                let endIndex = Math.max(startIndex, Math.min(
+                    indexAtOrBefore(scrollState.barTimestamps, endMs),
+                    scrollState.barTimestamps.length - 1
+                ));
+                scrollState.visibleBarCount = endIndex - startIndex + 1;
+                scrollState.maxStartIndex = Math.max(
+                    scrollState.barDates.length - scrollState.visibleBarCount, 0
+                );
+                startIndex = Math.min(startIndex, scrollState.maxStartIndex);
                 scrollState.startIndex = startIndex;
 
-                const ranges = computeYRanges(scrollState, startIndex);
+                const ranges = computeYRanges(scrollState, startIndex, endIndex);
                 window.parent.Plotly.relayout(gd, {{
                     "yaxis.range": ranges.yRange,
                     "yaxis2.range": ranges.volRange,
@@ -827,6 +869,24 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             const barDates = {dates_json};
             const previousGd = currentGd;
             currentGd = gd;
+
+            // 指2本でのピンチズームは、Plotly側の設定scrollZoomが有効な
+            // 場合のみ動く。ただしこの設定はPCでのマウスホイール操作にも
+            // 影響し、有効にするとチャート上でのホイール操作がページ
+            // スクロールではなくズームになってしまう（PCでは今まで通り
+            // ページスクロールのままにしたいという要望のため避けたい）。
+            // config={{"scrollZoom": ...}}はst.plotly_chart呼び出し時に
+            // Python側で固定されるためタッチデバイスかどうかで出し分け
+            // られず、代わりに描画後にgd._context（Plotly.jsが実際の
+            // ジェスチャー判定時に参照する内部設定）をタッチデバイスの
+            // ときだけ直接書き換える。タッチ対応の判定は
+            // navigator.maxTouchPoints（Pointer Events仕様。タッチ非対応の
+            // PCでは0。navigatorはグローバルAPIのためiframe内でも取得できる）
+            // を使う
+            if (gd._context && navigator.maxTouchPoints > 0) {{
+                gd._context.scrollZoom = true;
+            }}
+
             currentScrollState = {{
                 barDates: barDates,
                 barTimestamps: barDates.map(function(d) {{ return parseAsUTC(d); }}),
