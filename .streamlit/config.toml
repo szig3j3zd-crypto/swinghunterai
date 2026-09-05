@@ -2,6 +2,9 @@
 # Tailscale経由でスマホ・他PCから接続できるよう、全ネットワークインターフェースで待ち受ける
 address = "0.0.0.0"
 port = 8501
+# スマホの「ホーム画面に追加」用アイコン（apple-touch-icon・manifest.json）を
+# 配信するため、ui/static/以下のファイルを /app/static/... で配信可能にする
+enableStaticServing = true
 
 [browser]
 gatherUsageStats = false

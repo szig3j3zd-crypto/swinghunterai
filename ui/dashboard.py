@@ -993,8 +993,59 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
 create_trades_table()
 create_watchlist_table()
 
-st.set_page_config(page_title="株探し", layout="wide")
+st.set_page_config(
+    page_title="株探し",
+    page_icon=str(Path(__file__).resolve().parent / "static" / "favicon-32.png"),
+    layout="wide",
+)
 st.markdown(PLOTLY_CURSOR_OVERRIDE_CSS, unsafe_allow_html=True)
+
+# スマホでブラウザの「ホーム画面に追加」をしたときのアイコンを独自の画像に
+# するための設定。Streamlitはページの<head>を直接編集する手段を提供して
+# いないため、st.iframe（同一オリジンアクセス可能なiframeとして埋め込む）
+# 経由でwindow.parent.document.head（アプリ本体のhead）へlink/metaタグを
+# 追加する。iOS Safariはapple-touch-icon、Android
+# Chromeはmanifest.jsonのiconsをそれぞれ参照する。再実行のたびにこの
+# st.iframe呼び出し自体は再実行されるため、二重追加を防ぐガード
+# （querySelectorで既存チェック）を入れている
+st.iframe(
+    """
+    <script>
+    (function() {
+        const doc = window.parent.document;
+        const head = doc.head;
+
+        function ensureLink(rel, href, attrs) {
+            if (doc.querySelector(`link[rel="${rel}"]`)) return;
+            const link = doc.createElement("link");
+            link.rel = rel;
+            link.href = href;
+            if (attrs) {
+                Object.keys(attrs).forEach(function(key) {
+                    link.setAttribute(key, attrs[key]);
+                });
+            }
+            head.appendChild(link);
+        }
+
+        ensureLink("apple-touch-icon", "/app/static/apple-touch-icon.png");
+        ensureLink("manifest", "/app/static/manifest.json");
+        ensureLink(
+            "icon", "/app/static/favicon-32.png",
+            {type: "image/png", sizes: "32x32"}
+        );
+
+        if (!doc.querySelector('meta[name="theme-color"]')) {
+            const meta = doc.createElement("meta");
+            meta.name = "theme-color";
+            meta.content = "#0e1117";
+            head.appendChild(meta);
+        }
+    })();
+    </script>
+    """,
+    height=1,
+)
 
 st.title("株探し")
 
