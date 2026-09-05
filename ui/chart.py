@@ -926,6 +926,32 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 return Math.sqrt(dx * dx + dy * dy);
             }}
 
+            // 矢印キー（applyPendingKeyMove）と同じ理由で、touchmoveのたびに
+            // 素直にPlotly.relayoutを呼ぶと、前のrelayout（内部でy軸再フィット
+            // 用のもう1回のrelayoutも連鎖する）がまだ完了していないうちに
+            // 次のrelayoutを呼ぶ「再入」が起き、指を動かすたびに描画が
+            // 詰まってガクつく（実際に発生・体感できるレベルで重かった）。
+            // 直前のrelayoutが完了するまでは新たなrelayoutを呼ばず、
+            // 目標範囲だけをpendingPinchRangeへ書き換えて溜めておき、
+            // 完了次第その最新値を一度だけ適用する
+            let pinchRelayoutInFlight = false;
+            let pendingPinchRange = null;
+
+            function applyPendingPinchRange() {{
+                if (!pendingPinchRange || !window.parent.Plotly) return;
+                const range = pendingPinchRange;
+                pendingPinchRange = null;
+                pinchRelayoutInFlight = true;
+                window.parent.Plotly.relayout(gd, {{
+                    "xaxis.range": range,
+                }}).then(function() {{
+                    pinchRelayoutInFlight = false;
+                    applyPendingPinchRange();
+                }}).catch(function() {{
+                    pinchRelayoutInFlight = false;
+                }});
+            }}
+
             gd.addEventListener("touchstart", function(e) {{
                 if (e.touches.length !== 2) {{
                     pinchState = null;
@@ -981,12 +1007,13 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     }}
                 }}
 
-                window.parent.Plotly.relayout(gd, {{
-                    "xaxis.range": [
-                        new Date(newStart).toISOString(),
-                        new Date(newEnd).toISOString(),
-                    ],
-                }});
+                pendingPinchRange = [
+                    new Date(newStart).toISOString(),
+                    new Date(newEnd).toISOString(),
+                ];
+                if (!pinchRelayoutInFlight) {{
+                    applyPendingPinchRange();
+                }}
             }}, {{ passive: false, capture: true }});
 
             gd.addEventListener("touchend", function(e) {{
