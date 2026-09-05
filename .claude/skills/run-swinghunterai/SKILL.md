@@ -62,7 +62,7 @@ printf '[general]\nemail = ""\n' > ~/.streamlit/credentials.toml
    ```
 
    `driver.py` opens the page, optionally switches to the ショート radio
-   button (`--direction short`), clicks 「銘柄検索開始」, waits for the scan
+   button (`--direction short`), clicks 「銘柄検索を開始」, waits for the scan
    to finish, screenshots, and prints any browser console errors. Exit code
    is non-zero if the scan didn't finish or the console had errors. A full
    scan of the TSE Prime universe (~1,559 stocks) takes **60-90 seconds** —
@@ -82,7 +82,7 @@ printf '[general]\nemail = ""\n' > ~/.streamlit/credentials.toml
 streamlit run ui/dashboard.py
 ```
 
-Opens a browser tab automatically. Click 「銘柄検索開始」 in the sidebar.
+Opens a browser tab automatically. Click 「銘柄検索を開始」 in the sidebar.
 Useless in a headless agent session — use the driver instead.
 
 ## Run: data pipeline (CLI scripts, non-interactive)

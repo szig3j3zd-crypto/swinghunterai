@@ -113,7 +113,7 @@ Streamlit Community Cloud（ui/dashboard.py をデプロイ、GitHub連携）
 
 # 既知の制限
 
-- **スマホ（Streamlit Cloud側）からの「銘柄検索開始」フルスキャンは、PCでの実行より
+- **スマホ（Streamlit Cloud側）からの「銘柄検索を開始」フルスキャンは、PCでの実行より
   大幅に遅くなる**（東証プライム全銘柄約1,559銘柄それぞれの株価をネットワーク経由で
   Tursoへ問い合わせるため）。日々のスキャンは引き続きPC側（Embedded Replicaで高速）で
   行い、スマホ・他PCは「今日の候補の閲覧」「売買銘柄・監視銘柄の追加編集」用と

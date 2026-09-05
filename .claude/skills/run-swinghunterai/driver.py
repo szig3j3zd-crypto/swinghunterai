@@ -2,7 +2,7 @@
 株探し Streamlit dashboard driver.
 
 Drives the running dashboard with a headless browser: opens it, selects a
-direction, clicks "銘柄検索開始" (scan), waits for the scan to finish, and
+direction, clicks "銘柄検索を開始" (scan), waits for the scan to finish, and
 saves a screenshot. Requires the dashboard to already be running
 (see SKILL.md for the launch command) - this script does not start it.
 
@@ -36,7 +36,7 @@ def run(url, direction, out_path, timeout_s):
         if direction == "short":
             page.click("text=ショート（売り）")
 
-        page.click("text=銘柄検索開始")
+        page.click("text=銘柄検索を開始")
 
         # Streamlit shows a "Stop" control top-right while a script run is in
         # progress. Wait for it to disappear rather than for the st.spinner

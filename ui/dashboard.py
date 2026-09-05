@@ -455,7 +455,7 @@ def _consume_scroll_flags():
     (scroll_to_chart, scroll_to_page_top)
         - scroll_to_chart: 銘柄をチェックしてチャート表示位置（focus_slot）が
           変わった場合に立つ
-        - scroll_to_page_top: サイドバーの「銘柄検索開始」で新しいスキャン結果を
+        - scroll_to_page_top: サイドバーの「銘柄検索を開始」で新しいスキャン結果を
           表示した場合に立つ
     """
 
@@ -615,7 +615,7 @@ def _style_delete_buttons_red():
     )
 
 
-# チャートの表示切替チェックボックスの既定値。「銘柄検索開始」直後など、
+# チャートの表示切替チェックボックスの既定値。「銘柄検索を開始」直後など、
 # このブロック自体が一度も描画されないスクリプト実行を挟むと、
 # st.checkbox側のkeyに紐づくセッション状態はStreamlitによって破棄される
 # （非表示のウィジェットの状態はrunをまたいで残らない仕様のため）。
@@ -638,7 +638,7 @@ CHART_DISPLAY_PREF_DEFAULTS = {
 def _persistent_checkbox(label, base_key, key_prefix):
 
     """
-    「銘柄検索開始」やフォーカス対象の切り替えを挟んでも状態が消えない
+    「銘柄検索を開始」やフォーカス対象の切り替えを挟んでも状態が消えない
     チェックボックス。st.checkbox()自体は毎回新規生成されるが、
     表示するvalue/変更後の値はpref_key下のsession_stateで独自に管理する
 
@@ -1067,7 +1067,7 @@ with st.sidebar:
     )
     min_market_cap = min_market_cap_oku * 100_000_000
 
-    run_button = st.button("銘柄検索開始", type="primary", width="stretch")
+    run_button = st.button("銘柄検索を開始", type="primary", width="stretch")
 
 # 個別銘柄検索の判定は、どのタブが表示中でも使えるようタブの外で評価しておく。
 # 判断基準（modules）が未選択でも検索・チャート確認自体はできるようにする
@@ -1125,7 +1125,7 @@ elif run_button:
         st.session_state["scan_version"] = st.session_state.get("scan_version", 0) + 1
         st.session_state["scroll_to_page_top"] = True
 
-        # 売買銘柄・監視銘柄タブを見ている状態で「銘柄検索開始」を押した場合も、
+        # 売買銘柄・監視銘柄タブを見ている状態で「銘柄検索を開始」を押した場合も、
         # 結果を確認できるようスキャンタブに戻す（active_tabはst.tabs()の
         # key。on_change="rerun"を指定しているため、ここで書き換えた値が
         # 次の描画に反映される）
@@ -1134,7 +1134,7 @@ elif run_button:
 candidates = st.session_state.get("candidates")
 watch_candidates = st.session_state.get("watch_candidates")
 
-# scroll_to_page_topは直前の「銘柄検索開始」処理（同じスクリプト実行の中、
+# scroll_to_page_topは直前の「銘柄検索を開始」処理（同じスクリプト実行の中、
 # st.rerun()を挟まずここまで来ている）で立てられる。st.tabs()より前だが
 # scroll_to_page_topが立ってから呼ぶ必要があるため、この位置で呼ぶ
 # （呼び出し自体はスクロール不要な場合も含め毎回同じ形で行う。理由は
@@ -1146,7 +1146,7 @@ _render_scroll_trigger(SCROLL_TO_CHART, SCROLL_TO_PAGE_TOP)
 tab_scan, tab_trades, tab_watchlist = st.tabs(
     ["スキャン", "売買銘柄", "監視銘柄"],
     # key・on_change="rerun"を指定することで、st.session_state["active_tab"]を
-    # 読み書きできるようにする（「銘柄検索開始」クリック時にスキャンタブへ戻す用途）。
+    # 読み書きできるようにする（「銘柄検索を開始」クリック時にスキャンタブへ戻す用途）。
     # 以前はこれが原因でタブ・見出しの二重表示を起こしたが、原因は
     # このスクロールトリガーの呼び出しがst.tabs()より前で不安定に
     # 出現/消失していたこと（st.tabs自体の問題ではなかった）と判明したため、
@@ -1170,7 +1170,7 @@ with tab_scan:
     focus_slot = st.container()
 
     if candidates is None:
-        st.info("サイドバーの「銘柄検索開始」を押してください。")
+        st.info("サイドバーの「銘柄検索を開始」を押してください。")
     elif not candidates:
         if scan_used_modules:
             st.warning("本日の候補はありません。")
