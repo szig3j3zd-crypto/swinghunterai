@@ -503,11 +503,38 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
     return f"""
     <style>
         body {{ margin: 0; }}
+        #sh-scroll-controls {{
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 4px;
+        }}
+        #sh-step-prev, #sh-step-next {{
+            flex: none;
+            width: 28px;
+            height: 28px;
+            border: none;
+            border-radius: 6px;
+            background: rgba(120, 120, 120, 0.18);
+            color: rgba(49, 51, 63, 0.8);
+            font-size: 14px;
+            line-height: 1;
+            padding: 0;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        #sh-step-prev:hover, #sh-step-next:hover {{
+            background: rgba(100, 100, 100, 0.3);
+        }}
+        #sh-step-prev:active, #sh-step-next:active {{
+            background: rgba(90, 90, 90, 0.4);
+        }}
         #sh-scrollbar-track {{
             position: relative;
-            width: 100%;
+            flex: 1;
             height: 14px;
-            margin-top: 4px;
             background: rgba(120, 120, 120, 0.18);
             border-radius: 7px;
             box-sizing: border-box;
@@ -526,13 +553,19 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         #sh-scrollbar-thumb:hover {{ background: rgba(100, 100, 100, 0.75); }}
         #sh-scrollbar-thumb:active {{ cursor: grabbing; background: rgba(90, 90, 90, 0.8); }}
     </style>
-    <div id="sh-scrollbar-track">
-        <div id="sh-scrollbar-thumb"></div>
+    <div id="sh-scroll-controls">
+        <button id="sh-step-prev" type="button" aria-label="1本戻す">&#9664;</button>
+        <div id="sh-scrollbar-track">
+            <div id="sh-scrollbar-thumb"></div>
+        </div>
+        <button id="sh-step-next" type="button" aria-label="1本進める">&#9654;</button>
     </div>
     <script>
     (function() {{
         const track = document.getElementById("sh-scrollbar-track");
         const thumb = document.getElementById("sh-scrollbar-thumb");
+        const stepPrevButton = document.getElementById("sh-step-prev");
+        const stepNextButton = document.getElementById("sh-step-next");
         const storageKey = {storage_key_json};
         const viewSignature = {view_signature_json};
 
@@ -867,6 +900,81 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             gd.on("plotly_relayout", relayoutHandler);
         }}
 
+        // 矢印キーを押しっぱなしにするとブラウザの自動リピートでkeydownが
+        // 連発される。1回ごとに素直にPlotly.relayoutを呼ぶと、前の
+        // relayout（呼び出し内でplotly_relayoutイベント経由の価格軸
+        // 再フィットも連鎖する）がまだ処理中のうちに次のrelayoutを
+        // 呼ぶ「再入」が起き、Plotly.js側の内部状態が壊れてそれ以降
+        // 矢印キーはおろかドラッグ等の操作にも一切反応しなくなることが
+        // あった（実際に発生した不具合）。そのため直前のrelayoutが
+        // 完了するまでは新たなrelayoutを呼ばず、目標インデックスだけを
+        // pendingKeyIndexへ書き換えて溜めておき、完了次第その最新値を
+        // 一度だけ適用する（押しっぱなし中の細かい移動が全部律儀に
+        // 再現されるわけではないが、最終的に指を離した位置には届く）。
+        // setup()の中ではなくトップレベルで一度だけ定義する（setup()は
+        // MAチェックボックスの切替等で同じiframe内で複数回呼ばれることが
+        // あり、その中で定義すると呼ばれるたびに以下のボタンへの
+        // リスナー登録が積み重なって、1回のクリックで複数回動いてしまう）
+        function applyPendingKeyMove(target, scrollState) {{
+            if (pendingKeyIndex === null) return;
+            const nextIndex = pendingKeyIndex;
+            pendingKeyIndex = null;
+            scrollState.startIndex = nextIndex;
+            const endIndex = Math.min(
+                nextIndex + scrollState.visibleBarCount - 1,
+                scrollState.barDates.length - 1
+            );
+            keyMoveInFlight = true;
+            const rangeStartMs = parseAsUTC(scrollState.barDates[nextIndex]) - barEdgePaddingMs;
+            const rangeEndMs = parseAsUTC(scrollState.barDates[endIndex]) + barEdgePaddingMs;
+            window.parent.Plotly.relayout(target, {{
+                "xaxis.range": [
+                    new Date(rangeStartMs).toISOString(),
+                    new Date(rangeEndMs).toISOString(),
+                ],
+            }}).then(function() {{
+                keyMoveInFlight = false;
+                applyPendingKeyMove(target, scrollState);
+            }}).catch(function() {{
+                keyMoveInFlight = false;
+            }});
+        }}
+
+        // 矢印キー・チャート下の「◀」「▶」ボタンのどちらから呼ばれても
+        // 同じ1本ずつの移動処理（pendingKeyIndexの更新とapplyPendingKeyMove
+        // の呼び出し）を共有する
+        function queueOneBarMove(target, scrollState, direction) {{
+            if (!target || !scrollState || !window.parent.Plotly) return;
+
+            const baseIndex = pendingKeyIndex !== null ? pendingKeyIndex : scrollState.startIndex;
+            let nextIndex;
+            if (direction === "left") {{
+                nextIndex = Math.max(baseIndex - 1, 0);
+            }} else {{
+                nextIndex = Math.min(baseIndex + 1, scrollState.maxStartIndex);
+            }}
+            pendingKeyIndex = nextIndex;
+
+            if (keyMoveInFlight) return;
+            applyPendingKeyMove(target, scrollState);
+        }}
+
+        // チャート下の「◀」「▶」ボタン（スマホなど矢印キーが使えない環境
+        // 向け）。このiframe自身が担当するチャート（currentGd・
+        // currentScrollState。setup()が更新するクロージャ変数を参照するため
+        // 常に最新のチャートを指す）を直接動かす。矢印キーと違い「どの
+        // チャートがアクティブか」の判定が要らない（ボタン自体がそのチャート
+        // 専用のものであるため）。ボタン自体はページ内に1度しか存在しない
+        // 静的要素なので、リスナー登録もここで1度だけ行う
+        stepPrevButton.addEventListener("click", function(e) {{
+            e.preventDefault();
+            queueOneBarMove(currentGd, currentScrollState, "left");
+        }});
+        stepNextButton.addEventListener("click", function(e) {{
+            e.preventDefault();
+            queueOneBarMove(currentGd, currentScrollState, "right");
+        }});
+
         function setup(gd) {{
             // scrollStateはこの関数の外（currentScrollState）に持たせ、gd
             // （Plotlyのチャートdiv）には保存しない。gdはStreamlitの再描画の
@@ -1056,42 +1164,6 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             // ボックス等、選択後もフォーカスが残り続ける）にある状態だと、
             // そのinput自身がカーソル移動のため矢印キーのbubbleを止めて
             // しまい、document（bubbleフェーズ）まで届かないことがある
-            // 矢印キーを押しっぱなしにするとブラウザの自動リピートでkeydownが
-            // 連発される。1回ごとに素直にPlotly.relayoutを呼ぶと、前の
-            // relayout（呼び出し内でplotly_relayoutイベント経由の価格軸
-            // 再フィットも連鎖する）がまだ処理中のうちに次のrelayoutを
-            // 呼ぶ「再入」が起き、Plotly.js側の内部状態が壊れてそれ以降
-            // 矢印キーはおろかドラッグ等の操作にも一切反応しなくなることが
-            // あった（実際に発生した不具合）。そのため直前のrelayoutが
-            // 完了するまでは新たなrelayoutを呼ばず、目標インデックスだけを
-            // pendingKeyIndexへ書き換えて溜めておき、完了次第その最新値を
-            // 一度だけ適用する（押しっぱなし中の細かい移動が全部律儀に
-            // 再現されるわけではないが、最終的に指を離した位置には届く）
-            function applyPendingKeyMove(target, scrollState) {{
-                if (pendingKeyIndex === null) return;
-                const nextIndex = pendingKeyIndex;
-                pendingKeyIndex = null;
-                scrollState.startIndex = nextIndex;
-                const endIndex = Math.min(
-                    nextIndex + scrollState.visibleBarCount - 1,
-                    scrollState.barDates.length - 1
-                );
-                keyMoveInFlight = true;
-                const rangeStartMs = parseAsUTC(scrollState.barDates[nextIndex]) - barEdgePaddingMs;
-                const rangeEndMs = parseAsUTC(scrollState.barDates[endIndex]) + barEdgePaddingMs;
-                window.parent.Plotly.relayout(target, {{
-                    "xaxis.range": [
-                        new Date(rangeStartMs).toISOString(),
-                        new Date(rangeEndMs).toISOString(),
-                    ],
-                }}).then(function() {{
-                    keyMoveInFlight = false;
-                    applyPendingKeyMove(target, scrollState);
-                }}).catch(function() {{
-                    keyMoveInFlight = false;
-                }});
-            }}
-
             const keydownHandler = function(e) {{
                 if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
 
@@ -1101,14 +1173,6 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                     return;
                 }}
 
-                const baseIndex = pendingKeyIndex !== null ? pendingKeyIndex : scrollState.startIndex;
-                let nextIndex;
-                if (e.key === "ArrowLeft") {{
-                    nextIndex = Math.max(baseIndex - 1, 0);
-                }} else {{
-                    nextIndex = Math.min(baseIndex + 1, scrollState.maxStartIndex);
-                }}
-                pendingKeyIndex = nextIndex;
                 e.preventDefault();
                 // stopImmediatePropagationが必要（stopPropagationだけでは
                 // 不十分）。st.tabs()の実装（React Aria）は、タブの矢印キー
@@ -1126,8 +1190,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 // 常に矢印キーはチャート移動を優先する
                 e.stopImmediatePropagation();
 
-                if (keyMoveInFlight) return;
-                applyPendingKeyMove(target, scrollState);
+                queueOneBarMove(target, scrollState, e.key === "ArrowLeft" ? "left" : "right");
             }};
             window.parent.__swingHunterScrollKeyHandler = keydownHandler;
             window.parent.document.addEventListener("keydown", keydownHandler, true);
