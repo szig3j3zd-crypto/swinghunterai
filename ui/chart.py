@@ -539,6 +539,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             border-radius: 7px;
             box-sizing: border-box;
             cursor: pointer;
+            touch-action: none;
         }}
         #sh-scrollbar-thumb {{
             position: absolute;
@@ -549,6 +550,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             border-radius: 7px;
             cursor: grab;
             box-sizing: border-box;
+            touch-action: none;
         }}
         #sh-scrollbar-thumb:hover {{ background: rgba(100, 100, 100, 0.75); }}
         #sh-scrollbar-thumb:active {{ cursor: grabbing; background: rgba(90, 90, 90, 0.8); }}
@@ -975,6 +977,159 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             queueOneBarMove(currentGd, currentScrollState, "right");
         }});
 
+        // つまみ・トラックへの実際の操作は、このscriptを埋め込んだiframe
+        // 自身のdocumentで発生するイベントであり、親ページのdocumentへは
+        // 伝播しない（iframeは別ドキュメントであり、中で起きたmousedown等が
+        // 親にbubbleすることはない）。そのためmousedown/mousemove/mouseup・
+        // touchstart/touchmove/touchendはすべてこのiframe自身の要素・
+        // documentで受け取る。iframe（＝チャート幅いっぱいの横長・低い
+        // div）の高さの範囲内でカーソル・指が動いている限りは、横方向に
+        // どれだけ動いてもこのdocumentのmousemove/touchmoveが発火し続ける。
+        //
+        // stepPrevButton/stepNextButtonと同じ理由で、ここもsetup()の外
+        // （トップレベルで1度だけ）で登録する。setup()の中で登録すると、
+        // MAチェックボックスの切替等で同じiframe内でsetup()が複数回
+        // 呼ばれるたびにmousemove等のリスナーが積み重なり、1回のドラッグで
+        // 複数回Plotly.relayoutが呼ばれて動きがガクつく（矢印キーの
+        // 連打対策と同じ「再入」の問題）
+        let dragState = null;
+
+        function startDrag(clientX) {{
+            // ドラッグ開始時点でensureLiveGd()を呼び、チャートdivがStreamlit
+            // の再描画で破棄・差し替えされていないか確認する（破棄されて
+            // いた場合は自動的にsetup()をやり直し、currentGd/
+            // currentScrollStateとplotly_relayoutリスナーを新しいdivへ
+            // 張り替える）。これをしないと、直前に見つけたdivがその後
+            // 無効になった場合にドラッグが反応しなくなる
+            const liveGd = ensureLiveGd();
+            const range = liveGd && liveGd._fullLayout && liveGd._fullLayout.xaxis
+                ? liveGd._fullLayout.xaxis.range : null;
+            if (!currentScrollState || !range) return;
+            dragState = {{
+                gd: liveGd,
+                startClientX: clientX,
+                startRangeMs: [
+                    parseAsUTC(range[0]),
+                    parseAsUTC(range[1]),
+                ],
+                trackWidthPx: track.getBoundingClientRect().width,
+                minMs: currentScrollState.barTimestamps[0] - barEdgePaddingMs,
+                maxMs: currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1]
+                    + barEdgePaddingMs,
+            }};
+        }}
+
+        function moveDrag(clientX) {{
+            if (!dragState || !window.parent.Plotly) return;
+            const deltaPx = clientX - dragState.startClientX;
+            const deltaMs = (deltaPx / dragState.trackWidthPx)
+                * (dragState.maxMs - dragState.minMs);
+            const width = dragState.startRangeMs[1] - dragState.startRangeMs[0];
+            let newStart = dragState.startRangeMs[0] + deltaMs;
+            let newEnd = dragState.startRangeMs[1] + deltaMs;
+            if (newStart < dragState.minMs) {{
+                newStart = dragState.minMs;
+                newEnd = newStart + width;
+            }}
+            if (newEnd > dragState.maxMs) {{
+                newEnd = dragState.maxMs;
+                newStart = newEnd - width;
+            }}
+            window.parent.Plotly.relayout(dragState.gd, {{
+                "xaxis.range": [
+                    new Date(newStart).toISOString(),
+                    new Date(newEnd).toISOString(),
+                ],
+            }});
+        }}
+
+        function endDrag() {{
+            dragState = null;
+            // このiframe内を操作するとブラウザのフォーカスがiframe側に
+            // 移り、以後の矢印キー等のキー入力が親ページ（window.parent.
+            // document）へ届かなくなる（キーイベントはフォーカスのある
+            // ドキュメントへ配送されるため）。ドラッグ操作が終わったら
+            // フォーカスを親ページへ戻し、矢印キーでのスクロールを
+            // 引き続き使えるようにする
+            window.parent.focus();
+        }}
+
+        thumb.addEventListener("mousedown", function(e) {{
+            startDrag(e.clientX);
+            e.preventDefault();
+        }});
+        document.addEventListener("mousemove", function(e) {{
+            moveDrag(e.clientX);
+        }});
+        document.addEventListener("mouseup", function() {{
+            endDrag();
+        }});
+
+        // スマホでの指1本によるドラッグ。touch-action: noneをCSS側で
+        // つまみ・トラックに指定しているため、ここでtouchstart/touchmoveを
+        // 処理してもブラウザ標準のページスクロールとは競合しない
+        thumb.addEventListener("touchstart", function(e) {{
+            if (e.touches.length !== 1) return;
+            startDrag(e.touches[0].clientX);
+            e.preventDefault();
+        }}, {{ passive: false }});
+        document.addEventListener("touchmove", function(e) {{
+            if (!dragState || e.touches.length !== 1) return;
+            moveDrag(e.touches[0].clientX);
+            e.preventDefault();
+        }}, {{ passive: false }});
+        document.addEventListener("touchend", function() {{
+            endDrag();
+        }});
+        document.addEventListener("touchcancel", function() {{
+            endDrag();
+        }});
+
+        // トラックの余白（つまみ以外の部分）をクリック・タップすると、
+        // その位置を中心に表示幅を保ったままジャンプする
+        function jumpToPosition(clientX) {{
+            const liveGd = ensureLiveGd();
+            const range = liveGd && liveGd._fullLayout && liveGd._fullLayout.xaxis
+                ? liveGd._fullLayout.xaxis.range : null;
+            if (!currentScrollState || !range || !window.parent.Plotly) return;
+
+            const rect = track.getBoundingClientRect();
+            const minMs = currentScrollState.barTimestamps[0] - barEdgePaddingMs;
+            const maxMs = currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1]
+                + barEdgePaddingMs;
+            const clickMs = minMs + ((clientX - rect.left) / rect.width) * (maxMs - minMs);
+            const width = parseAsUTC(range[1]) - parseAsUTC(range[0]);
+            let newStart = clickMs - width / 2;
+            let newEnd = clickMs + width / 2;
+            if (newStart < minMs) {{
+                newStart = minMs;
+                newEnd = newStart + width;
+            }}
+            if (newEnd > maxMs) {{
+                newEnd = maxMs;
+                newStart = newEnd - width;
+            }}
+            window.parent.Plotly.relayout(liveGd, {{
+                "xaxis.range": [
+                    new Date(newStart).toISOString(),
+                    new Date(newEnd).toISOString(),
+                ],
+            }});
+            // つまみのドラッグ後と同様、操作でiframe側に移った
+            // フォーカスを親ページへ戻す
+            window.parent.focus();
+        }}
+
+        track.addEventListener("mousedown", function(e) {{
+            if (e.target === thumb) return;
+            jumpToPosition(e.clientX);
+        }});
+        track.addEventListener("touchstart", function(e) {{
+            if (e.target === thumb || e.touches.length !== 1) return;
+            jumpToPosition(e.touches[0].clientX);
+            e.preventDefault();
+        }}, {{ passive: false }});
+
         function setup(gd) {{
             // scrollStateはこの関数の外（currentScrollState）に持たせ、gd
             // （Plotlyのチャートdiv）には保存しない。gdはStreamlitの再描画の
@@ -1195,119 +1350,6 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             window.parent.__swingHunterScrollKeyHandler = keydownHandler;
             window.parent.document.addEventListener("keydown", keydownHandler, true);
 
-            // つまみ・トラックへの実際のクリックは、このscriptを埋め込んだ
-            // iframe自身のdocumentで発生するイベントであり、親ページの
-            // documentへは伝播しない（iframeは別ドキュメントであり、
-            // 中で起きたmousedown等が親にbubbleすることはない）。そのため
-            // mousedown/mousemove/mouseupはすべてこのiframe自身の要素・
-            // documentで受け取る。iframe（＝チャート幅いっぱいの横長・
-            // 低いdiv）の高さの範囲内でカーソルが動いている限りは、
-            // 横方向にどれだけ動いてもこのdocumentのmousemoveが発火し
-            // 続ける。iframeは再描画のたびに作り直されるため、ここで
-            // 登録するリスナーも（前回分ごと）毎回新しく作られる形になり、
-            // 明示的な後始末は不要
-            let dragState = null;
-
-            thumb.addEventListener("mousedown", function(e) {{
-                // ドラッグ開始時点でensureLiveGd()を呼び、チャートdivが
-                // Streamlitの再描画で破棄・差し替えされていないか確認する
-                // （破棄されていた場合は自動的にsetup()をやり直し、
-                // currentGd/currentScrollStateとplotly_relayoutリスナーを
-                // 新しいdivへ張り替える）。これをしないと、setup()実行時に
-                // 見つけたdivがその後無効になった場合にドラッグが反応しなく
-                // なる
-                const liveGd = ensureLiveGd();
-                const range = liveGd && liveGd._fullLayout && liveGd._fullLayout.xaxis
-                    ? liveGd._fullLayout.xaxis.range : null;
-                if (!currentScrollState || !range) return;
-                dragState = {{
-                    gd: liveGd,
-                    startClientX: e.clientX,
-                    startRangeMs: [
-                        parseAsUTC(range[0]),
-                        parseAsUTC(range[1]),
-                    ],
-                    trackWidthPx: track.getBoundingClientRect().width,
-                    minMs: currentScrollState.barTimestamps[0] - barEdgePaddingMs,
-                    maxMs: currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1]
-                        + barEdgePaddingMs,
-                }};
-                e.preventDefault();
-            }});
-
-            document.addEventListener("mousemove", function(e) {{
-                if (!dragState || !window.parent.Plotly) {{
-                    return;
-                }}
-                const deltaPx = e.clientX - dragState.startClientX;
-                const deltaMs = (deltaPx / dragState.trackWidthPx)
-                    * (dragState.maxMs - dragState.minMs);
-                const width = dragState.startRangeMs[1] - dragState.startRangeMs[0];
-                let newStart = dragState.startRangeMs[0] + deltaMs;
-                let newEnd = dragState.startRangeMs[1] + deltaMs;
-                if (newStart < dragState.minMs) {{
-                    newStart = dragState.minMs;
-                    newEnd = newStart + width;
-                }}
-                if (newEnd > dragState.maxMs) {{
-                    newEnd = dragState.maxMs;
-                    newStart = newEnd - width;
-                }}
-                window.parent.Plotly.relayout(dragState.gd, {{
-                    "xaxis.range": [
-                        new Date(newStart).toISOString(),
-                        new Date(newEnd).toISOString(),
-                    ],
-                }});
-            }});
-
-            document.addEventListener("mouseup", function() {{
-                dragState = null;
-                // このiframe内をクリックするとブラウザのフォーカスがiframe側に
-                // 移り、以後の矢印キー等のキー入力が親ページ（window.parent.
-                // document）へ届かなくなる（キーイベントはフォーカスのある
-                // ドキュメントへ配送されるため）。ドラッグ操作が終わったら
-                // フォーカスを親ページへ戻し、矢印キーでのスクロールを
-                // 引き続き使えるようにする
-                window.parent.focus();
-            }});
-
-            // トラックの余白（つまみ以外の部分）をクリックすると、
-            // そのクリック位置を中心に表示幅を保ったままジャンプする
-            track.addEventListener("mousedown", function(e) {{
-                if (e.target === thumb || !window.parent.Plotly) return;
-                // つまみのmousedownと同様、クリック時点でensureLiveGd()を呼ぶ
-                const liveGd = ensureLiveGd();
-                const range = liveGd && liveGd._fullLayout && liveGd._fullLayout.xaxis
-                    ? liveGd._fullLayout.xaxis.range : null;
-                if (!currentScrollState || !range) return;
-
-                const rect = track.getBoundingClientRect();
-                const minMs = currentScrollState.barTimestamps[0] - barEdgePaddingMs;
-                const maxMs = currentScrollState.barTimestamps[currentScrollState.barTimestamps.length - 1]
-                    + barEdgePaddingMs;
-                const clickMs = minMs + ((e.clientX - rect.left) / rect.width) * (maxMs - minMs);
-                const width = parseAsUTC(range[1]) - parseAsUTC(range[0]);
-                let newStart = clickMs - width / 2;
-                let newEnd = clickMs + width / 2;
-                if (newStart < minMs) {{
-                    newStart = minMs;
-                    newEnd = newStart + width;
-                }}
-                if (newEnd > maxMs) {{
-                    newEnd = maxMs;
-                    newStart = newEnd - width;
-                }}
-                window.parent.Plotly.relayout(liveGd, {{
-                    "xaxis.range": [
-                        new Date(newStart).toISOString(),
-                        new Date(newEnd).toISOString(),
-                    ],
-                }});
-                // つまみのドラッグ後と同様、クリックでiframe側に移った
-                // フォーカスを親ページへ戻す
-                window.parent.focus();
-            }});
         }}
 
         // st.plotly_chart側の描画は非同期のため、このscriptが先に動いて
