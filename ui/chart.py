@@ -1,4 +1,5 @@
 import json
+import math
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -32,6 +33,10 @@ MA_LABELS = {
 }
 GRID_COLOR = "rgba(128, 128, 128, 0.18)"
 Y_AXIS_PADDING_RATIO = 0.04
+
+# 価格軸の目盛間隔（dtick）を選ぶ際の目安本数。build_scroll_sync_script側の
+# niceDtick()と同じ値を使い、スクロール前後で目盛間隔の粒度が変わらないようにする
+PRICE_DTICK_TARGET_TICKS = 6
 
 # モードバーのアイコン説明（ツールチップ）を日本語化する。
 # 公式の日本語ロケールファイルを読み込む手段が無いため、
@@ -140,6 +145,36 @@ def compute_visible_window(df, start_date, end_date):
     volume_range = [0, window["volume"].max() * (1 + Y_AXIS_PADDING_RATIO)]
 
     return [start_date, end_date], y_range, volume_range
+
+
+def _nice_price_dtick(low, high, target_ticks=PRICE_DTICK_TARGET_TICKS):
+
+    """
+    価格軸の目盛間隔（dtick）を、値幅に応じて「きりのよい」単位
+    （50, 100, 200, 500, 1000, ...）から選ぶ。Plotly標準の自動目盛に任せると、
+    値幅によっては100を飛ばして50から200へ直接ジャンプすることがあり
+    （銘柄の株価水準によって節目が分かりにくくなる）不安定なため、
+    明示的に計算する。50円単位を目盛の最小単位として維持しつつ、
+    target_ticks本前後になる候補のうち、目標間隔に対数スケールで
+    最も近いものを選ぶ
+    """
+
+    price_range = high - low
+    if price_range <= 0:
+        return 50
+
+    raw_step = price_range / target_ticks
+
+    candidates = []
+    magnitude = 1
+    while magnitude < 10 ** 7:
+        for mult in (1, 2, 5):
+            candidate = mult * magnitude
+            if candidate >= 50:
+                candidates.append(candidate)
+        magnitude *= 10
+
+    return min(candidates, key=lambda c: abs(math.log(c) - math.log(raw_step)))
 
 
 def _compute_date_rangebreaks(df):
@@ -412,7 +447,12 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
         fig.update_xaxes(range=x_range)
 
     if y_range is not None:
-        fig.update_yaxes(range=y_range, row=1, col=1)
+        fig.update_yaxes(
+            range=y_range,
+            dtick=_nice_price_dtick(y_range[0], y_range[1]),
+            row=1,
+            col=1,
+        )
 
     if show_volume and volume_range is not None:
         fig.update_yaxes(range=volume_range, row=2, col=1)
@@ -768,6 +808,40 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             return idx;
         }}
 
+        // 価格軸の目盛間隔（dtick）を、値幅に応じて「きりのよい」単位
+        // （50, 100, 200, 500, 1000, ...）から選ぶ。Plotly標準の自動目盛に
+        // 任せると値幅によっては100を飛ばして50から200へ直接ジャンプする
+        // ことがあり不安定なため、Python側のchart.py:_nice_price_dtick()と
+        // 同じロジックをここでも使い、スクロール・ズーム中も同じ基準で
+        // 目盛間隔を選び直す
+        function niceDtick(low, high, targetTicks) {{
+            targetTicks = targetTicks || {PRICE_DTICK_TARGET_TICKS};
+            const range = high - low;
+            if (!(range > 0)) return 50;
+            const rawStep = range / targetTicks;
+
+            const candidates = [];
+            let magnitude = 1;
+            while (magnitude < 1e7) {{
+                [1, 2, 5].forEach(function(mult) {{
+                    const candidate = mult * magnitude;
+                    if (candidate >= 50) candidates.push(candidate);
+                }});
+                magnitude *= 10;
+            }}
+
+            let best = candidates[0];
+            let bestDist = Math.abs(Math.log(best) - Math.log(rawStep));
+            for (let i = 1; i < candidates.length; i++) {{
+                const dist = Math.abs(Math.log(candidates[i]) - Math.log(rawStep));
+                if (dist < bestDist) {{
+                    best = candidates[i];
+                    bestDist = dist;
+                }}
+            }}
+            return best;
+        }}
+
         function computeYRanges(scrollState, startIndex, endIndex) {{
             let lowMin = Infinity;
             let highMax = -Infinity;
@@ -778,8 +852,11 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 if (scrollState.volumes[i] > volMax) volMax = scrollState.volumes[i];
             }}
             const padding = (highMax - lowMin) * 0.04 || highMax * 0.01;
+            const yLow = lowMin - padding;
+            const yHigh = highMax + padding;
             return {{
-                yRange: [lowMin - padding, highMax + padding],
+                yRange: [yLow, yHigh],
+                yDtick: niceDtick(yLow, yHigh),
                 volRange: [0, volMax * 1.04],
             }};
         }}
@@ -894,6 +971,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 const ranges = computeYRanges(scrollState, startIndex, endIndex);
                 window.parent.Plotly.relayout(gd, {{
                     "yaxis.range": ranges.yRange,
+                    "yaxis.dtick": ranges.yDtick,
                     "yaxis2.range": ranges.volRange,
                 }});
                 updateThumb(gd, scrollState);
