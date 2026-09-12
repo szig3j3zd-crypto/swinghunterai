@@ -546,7 +546,17 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         #sh-scroll-controls {{
             display: flex;
             align-items: center;
-            gap: 6px;
+            /* 矢印ボタンは常に左右の端（コンテナの開始・終端）に固定し、
+               位置は変えない。トラック（#sh-scrollbar-track）だけを
+               元の（矢印ボタンの間いっぱいに広がる）幅より短くすることで、
+               ボタンとトラックの間に自然な隙間ができる（space-betweenは
+               余った幅を両端のボタンとトラックの間の2箇所に均等配分する
+               ため、ボタン自体の位置はコンテナ幅・ボタン幅が変わらない
+               限り動かない。2026-09-13改訂: 以前はコンテナ全体を
+               justify-content: centerで中央寄せし、ボタンごと内側へ
+               動かしていたが、「矢印ボタンの位置は変えず、スクロール
+               バーの幅だけを狭める」という要望のため変更した） */
+            justify-content: space-between;
             margin-top: 4px;
         }}
         #sh-step-prev, #sh-step-next {{
@@ -573,7 +583,15 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         }}
         #sh-scrollbar-track {{
             position: relative;
-            flex: 1;
+            /* 以前はflex:1で矢印ボタン間の幅いっぱいに広がっていたため、
+               スマホで矢印ボタンを指で押すと隣のトラックへ誤ってタッチ
+               してしまっていた。ボタン2つ分（28px×2=56px）を除いた
+               残り幅の8割（元の幅の4/5程度）に狭め、余った2割を
+               space-between（上の#sh-scroll-controls）でボタンとの
+               間隔として両側に振り分ける。位置・幅の計算（updateThumb等）
+               はtrack自身の実際の描画幅を都度取得しているため、幅を
+               変えても動作は変わらない */
+            width: calc((100% - 56px) * 0.8);
             height: 14px;
             background: rgba(120, 120, 120, 0.18);
             border-radius: 7px;
