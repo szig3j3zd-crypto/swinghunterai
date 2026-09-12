@@ -22,6 +22,18 @@ except Exception:
 import pandas as pd
 
 from config.config import MAX_PRICE, MIN_MARKET_CAP, MIN_PRICE, MIN_VOLUME
+from database.practice_settings_repository import (
+    create_table as create_practice_settings_table,
+    get_initial_capital,
+    update_initial_capital,
+)
+from database.practice_trade_repository import (
+    add_practice_trade,
+    create_table as create_practice_trades_table,
+    delete_practice_trade,
+    get_all_practice_trades,
+    update_practice_trade,
+)
 from database.stock_master_reader import get_active_stocks
 from database.trade_repository import (
     add_trade,
@@ -611,7 +623,13 @@ def _style_delete_buttons_red():
 
     labels_js = ", ".join(
         f'"{label}"'
-        for label in ["監視銘柄を削除", "選択した取引を削除"]
+        for label in [
+            "監視銘柄を削除",
+            "選択した取引を削除",
+            "選択した記録を削除",
+            "練習の売買記録をすべて削除",
+            "はい、すべて削除する",
+        ]
     )
 
     script = f"""
@@ -767,6 +785,7 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
 
     chart_df = _get_cached_chart_data(code, chart_timeframe)
     latest_bar = chart_df.iloc[-1]
+    last_date = chart_df["date"].max()
 
     # 表示期間（横スクロールできる範囲全体）と表示幅（画面に一度に表示する
     # 幅。この幅を保ったまま表示期間の範囲内を横スクロールする）を1行、
@@ -820,6 +839,57 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
     st.session_state[width_pref_key] = _width_label_to_bar_count(
         display_width_label, chart_timeframe
     )
+
+    # 年月日で検索すると、その日付（に最も近い、その日以前の実データがある日）が
+    # チャートの一番右（最新側）に来るよう表示位置をジャンプさせる。
+    # 「最新へ」ボタンは、date_input自身のウィジェットkeyにも直接
+    # 書き戻す（pref_keyだけでは、このブロックが同じrun内で既に一度
+    # 描画されている場合にvalue=が無視され、表示が変わらないため）
+    #
+    # 選べる日付は表示期間の範囲内（period_start〜最新日）に制限する。
+    # 表示期間より古い日付を選べてしまうと、その日付はどのみち表示期間
+    # 外のためchart_df_in_periodに存在せず、実際には表示期間内で最も
+    # 古い日にフォールバックする（後述のtarget_end_index計算）。それを
+    # min_valueで防がず選択自体を許してしまうと、検索欄に入力した日付と
+    # 実際にチャートの右端に来る日付が食い違い、「検索した日付が右端に
+    # ならない」ように見える不具合になる（2026-09-12発見・修正）。
+    # 表示期間を縮めた結果、以前保存した検索日がその範囲外になる
+    # ケースもあるため、ウィジェットへ渡す直前に必ずperiod_start〜
+    # 最新日へクランプする（範囲外の値のままdate_inputへ渡すと
+    # StreamlitがStreamlitAPIExceptionを出す）
+    date_pref_key = f"chart_date_search_pref_{key_prefix}"
+    date_widget_key = f"chart_date_search_input_{key_prefix}"
+    default_search_date = last_date.date()
+    period_start_date = (last_date - _period_label_to_offset(period_label)).date()
+
+    def _clamp_search_date(value):
+        return min(max(value, period_start_date), default_search_date)
+
+    if date_widget_key in st.session_state:
+        st.session_state[date_widget_key] = _clamp_search_date(
+            st.session_state[date_widget_key]
+        )
+
+    date_col, date_reset_col, _date_spacer = st.columns(
+        [1.6, 1, 4.7], gap="xxsmall", vertical_alignment="bottom"
+    )
+    with date_reset_col:
+        if st.button("最新へ", key=f"chart_date_search_reset_{key_prefix}"):
+            st.session_state[date_widget_key] = default_search_date
+            st.session_state[date_pref_key] = default_search_date
+    with date_col:
+        search_date = st.date_input(
+            "年月日で検索",
+            value=_clamp_search_date(
+                st.session_state.get(date_pref_key, default_search_date)
+            ),
+            min_value=period_start_date,
+            max_value=default_search_date,
+            key=date_widget_key,
+            help="指定した日付をチャートの一番右（最新側）にして表示します。"
+            "選べるのは表示期間の範囲内のみです。",
+        )
+    st.session_state[date_pref_key] = search_date
 
     # vertical_alignment="bottom"で、ラベル行が無いチェックボックスを
     # チェックボックス自体の高さに揃える。列幅比率は各チェックボックスの
@@ -890,8 +960,6 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         if show
     ]
 
-    last_date = chart_df["date"].max()
-
     # 表示期間の範囲外のデータはチャートに渡さない。これにより、横スクロールで
     # 移動できる範囲そのものが表示期間で区切られる（表示期間より古いデータは
     # そもそもチャート上に存在しないため、それより先へはスクロールできない）
@@ -907,15 +975,25 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         max(int((chart_df_in_period["date"] >= width_start_date).sum()), 1),
         total_bar_count,
     )
-    max_scroll_offset = total_bar_count - visible_bar_count
 
-    # Streamlitが描画する初期表示は常に最新側（表示幅ぶん）。そこから先の
-    # 横スクロールは、チャート下に表示するスクロールバー・チャート上の
-    # ドラッグ・矢印キーに任せ、ブラウザ側だけで完結させる
-    # （ui.chart.build_scroll_sync_script）ため、Streamlitの再実行は伴わない
-    start_offset = max_scroll_offset
-    start_index = start_offset
-    end_index = start_offset + visible_bar_count - 1
+    # Streamlitが描画する初期表示位置は、年月日検索欄で指定した日付
+    # （未指定時は常に最新の日付＝従来通りの挙動）を一番右（最新側）に
+    # した表示幅ぶん。そこから先の横スクロールは、チャート下に表示する
+    # スクロールバー・チャート上のドラッグ・矢印キーに任せ、ブラウザ側
+    # だけで完結させる（ui.chart.build_scroll_sync_script）ため、
+    # Streamlitの再実行は伴わない。検索日が表示期間より古い、または
+    # 実データの無い日（土日等）の場合は、その日以前で最も新しい実データの
+    # 日に丸める（表示期間より古ければ表示期間内で最も古い日に丸まる）
+    target_end_index = (
+        chart_df_in_period["date"].searchsorted(
+            pd.Timestamp(search_date), side="right"
+        )
+        - 1
+    )
+    target_end_index = min(max(int(target_end_index), 0), total_bar_count - 1)
+    start_index = max(target_end_index - visible_bar_count + 1, 0)
+    end_index = min(start_index + visible_bar_count - 1, total_bar_count - 1)
+    start_offset = start_index
     window_start_date = chart_df_in_period["date"].iloc[start_index]
     window_end_date = chart_df_in_period["date"].iloc[end_index]
     x_range, y_range, volume_range = compute_visible_window(
@@ -973,12 +1051,16 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             visible_bar_count,
             start_offset,
             storage_key=f"{key_prefix}:{code}",
-            # 表示位置の復元は「表示期間・表示幅を自分では変えていない
-            # 再描画」（MAチェックボックス切替・日足/週足/月足の変更など）
-            # だけに適用したい。view_signatureが前回保存時と違えば、
-            # ユーザーが表示期間/表示幅を明示的に変更したとみなし、
-            # 復元をスキップしてPython側の新しい既定表示をそのまま使う
-            view_signature=f"{period_label}:{display_width_label}",
+            # 表示位置の復元は「表示期間・表示幅・年月日検索を自分では
+            # 変えていない再描画」（MAチェックボックス切替・日足/週足/月足の
+            # 変更など）だけに適用したい。view_signatureが前回保存時と
+            # 違えば、ユーザーが表示期間/表示幅を明示的に変更した、または
+            # 年月日を検索したとみなし、復元をスキップしてPython側の
+            # 新しい既定表示（検索日があればその日を一番右にした表示）を
+            # そのまま使う
+            view_signature=(
+                f"{period_label}:{display_width_label}:{search_date.isoformat()}"
+            ),
         ),
         # トラック自体は細い（14px）が、ドラッグ中に多少上下にぶれても
         # このiframe自身の高さの範囲内であればmousemoveを取りこぼさない
@@ -1034,6 +1116,8 @@ _ensure_static_icon_tags()
 # 起動のたびに呼んでも問題ない
 create_trades_table()
 create_watchlist_table()
+create_practice_trades_table()
+create_practice_settings_table()
 
 st.set_page_config(
     page_title="株探し",
@@ -1216,8 +1300,8 @@ watch_candidates = st.session_state.get("watch_candidates")
 SCROLL_TO_CHART, SCROLL_TO_PAGE_TOP = _consume_scroll_flags()
 _render_scroll_trigger(SCROLL_TO_CHART, SCROLL_TO_PAGE_TOP)
 
-tab_scan, tab_trades, tab_watchlist = st.tabs(
-    ["スキャン", "売買銘柄", "監視銘柄"],
+tab_scan, tab_trades, tab_watchlist, tab_practice = st.tabs(
+    ["スキャン", "売買銘柄", "監視銘柄", "練習チャート"],
     # key・on_change="rerun"を指定することで、st.session_state["active_tab"]を
     # 読み書きできるようにする（「銘柄検索を開始」クリック時にスキャンタブへ戻す用途）。
     # 以前はこれが原因でタブ・見出しの二重表示を起こしたが、原因は
@@ -2095,6 +2179,350 @@ def _render_watchlist_section():
             st.rerun()
 
 
+def _render_practice_trade_table(trades):
+
+    """
+    練習の売買記録を1つのdata_editorで表示・編集する
+
+    売買銘柄タブ（_render_trade_table）と違い、保有中/決算済みのセクション
+    分け・時間足・NISA・税計算は持たず、全件を1つの表にまとめて表示する
+    （練習チャートタブは「今の売買記録より簡単に」という要望のための
+    簡易版のため）。行の選択は「選択」チェックボックス列で行い（チャート
+    表示には連動しない。練習チャートのチャートは検索欄で選んだ銘柄を
+    そのまま表示し続けるだけの単純な作りにしている）、選択した1件だけ
+    「選択した記録を削除」ボタンで削除できる
+
+    「練習の売買記録をすべて削除」ボタンで全件を一括削除できる
+    （2026-09-13追加）。選択操作なしで全記録が消える、単発の削除より
+    影響が大きい操作のため、ボタンを押すと即削除せず「本当に削除するか」の
+    確認（`practice_trade_confirm_delete_all`セッション状態）を挟む。
+    記録自体は明示的に削除しない限りDBに残り続ける（他の永続データ同様、
+    アプリの再起動・再実行では消えない）
+
+    方向・取引日・買値・売値・売却日・株数はすべて表内で直接編集できる
+    （2026-09-13改訂。以前は方向のみ編集不可にしていたが、「記録した
+    内容を削除や修正できるようにして」との要望を受けて方向も編集可能に
+    した。同日、「売った時の日付も入れれるように」との要望を受けて
+    売却日（exit_date）も追加した）
+
+    tradesは呼び出し側（_render_practice_chart_section）が取得済みの
+    一覧をそのまま受け取る（軍資金の計算にも同じ一覧を使うため、
+    ここで再度DBへ問い合わせない）
+    """
+
+    if not trades:
+        st.caption(
+            "まだ練習の売買記録がありません。上の検索欄で銘柄を選んで"
+            "追加してください。"
+        )
+        return
+
+    current_selected_id = st.session_state.get("practice_trade_selected_id")
+
+    display_df = pd.DataFrame(
+        [
+            {
+                "選択": trade["id"] == current_selected_id,
+                "コード": trade["code"],
+                "銘柄名": trade["company_name"],
+                "方向": DIRECTION_LABELS[trade["direction"]],
+                "取引日": date.fromisoformat(trade["trade_date"]),
+                "買値": trade["entry_price"],
+                "売値": trade["exit_price"],
+                "売却日": (
+                    date.fromisoformat(trade["exit_date"])
+                    if trade.get("exit_date") else None
+                ),
+                "株数": trade["quantity"],
+                "損益": calculate_pnl(trade),
+            }
+            for trade in trades
+        ],
+        index=[trade["id"] for trade in trades],
+    )
+    # DateColumnの入力UI（カレンダーピッカー）を確実に出すため、object dtype
+    # ではなくdatetime64に明示変換する（5章の売買銘柄タブと同じ理由）
+    display_df["取引日"] = pd.to_datetime(display_df["取引日"])
+    display_df["売却日"] = pd.to_datetime(display_df["売却日"])
+
+    edited_df = st.data_editor(
+        _style_negative_pnl_red(display_df),
+        # keyに選択中IDを含める: 選択が変わるたびにウィジェットを作り直し、
+        # 過去の編集状態を引きずらないようにする（5章と同じ理由）
+        key=f"practice_trade_editor_{current_selected_id}",
+        width="stretch",
+        disabled=["コード", "銘柄名", "損益"],
+        column_config={
+            "選択": st.column_config.CheckboxColumn(
+                help="削除する記録を選びます", pinned=True
+            ),
+            "コード": st.column_config.Column(pinned=True),
+            "銘柄名": st.column_config.Column(pinned=True),
+            "方向": st.column_config.SelectboxColumn(
+                options=list(DIRECTION_LABELS.values()),
+                help="登録を間違えた場合はここで修正できます",
+            ),
+            "取引日": st.column_config.DateColumn(format="YYYY-MM-DD"),
+            "売値": st.column_config.NumberColumn(
+                help="値を入れると決済済みとして損益を計算します"
+            ),
+            "売却日": st.column_config.DateColumn(
+                format="YYYY-MM-DD",
+                help="決済（売却）した日を入力できます",
+            ),
+            "損益": st.column_config.NumberColumn(
+                help="簡易計算（税計算はしません）。未決済なら空欄です"
+            ),
+        },
+    )
+
+    trade_ids = [trade["id"] for trade in trades]
+    newly_selected_ids = [
+        trade_id for trade_id in trade_ids
+        if bool(edited_df.loc[trade_id, "選択"]) and trade_id != current_selected_id
+    ]
+
+    if newly_selected_ids:
+        st.session_state["practice_trade_selected_id"] = newly_selected_ids[0]
+        st.rerun()
+    elif (
+        current_selected_id in trade_ids
+        and not bool(edited_df.loc[current_selected_id, "選択"])
+    ):
+        st.session_state["practice_trade_selected_id"] = None
+        st.rerun()
+
+    direction_labels_inverse = {v: k for k, v in DIRECTION_LABELS.items()}
+
+    for trade in trades:
+        row = edited_df.loc[trade["id"]]
+        new_direction = direction_labels_inverse[row["方向"]]
+        new_trade_date = (
+            trade["trade_date"] if pd.isna(row["取引日"])
+            else pd.Timestamp(row["取引日"]).strftime("%Y-%m-%d")
+        )
+        new_exit_price = (
+            None if pd.isna(row["売値"]) else float(row["売値"])
+        )
+        new_exit_date = (
+            None if pd.isna(row["売却日"])
+            else pd.Timestamp(row["売却日"]).strftime("%Y-%m-%d")
+        )
+
+        if (
+            new_direction != trade["direction"]
+            or new_trade_date != trade["trade_date"]
+            or row["買値"] != trade["entry_price"]
+            or new_exit_price != trade["exit_price"]
+            or new_exit_date != trade.get("exit_date")
+            or row["株数"] != trade["quantity"]
+        ):
+            update_practice_trade(
+                trade["id"],
+                direction=new_direction,
+                trade_date=new_trade_date,
+                entry_price=float(row["買値"]),
+                exit_price=new_exit_price,
+                quantity=int(row["株数"]),
+                exit_date=new_exit_date,
+            )
+            st.rerun()
+
+    closed_trades = [t for t in trades if t["exit_price"] is not None]
+    if closed_trades:
+        simple_total = sum(calculate_pnl(t) for t in closed_trades)
+        st.caption(
+            f"決済済み{len(closed_trades)}件の損益合計（簡易計算・税引前）: "
+            f"{simple_total:+,.0f}円"
+        )
+
+    if current_selected_id is not None and current_selected_id in trade_ids:
+        if st.button("選択した記録を削除", key="delete_practice_trade_button"):
+            delete_practice_trade(current_selected_id)
+            st.session_state["practice_trade_selected_id"] = None
+            st.rerun()
+        _style_delete_buttons_red()
+
+    st.divider()
+
+    # 全件一括削除。取り消せないうえ選択操作なしで全記録が消える、単発の
+    # 削除より影響が大きい操作のため、ワンクリックでは実行せず「本当に
+    # 削除するか」の確認ステップを挟む（2026-09-13追加）
+    if st.session_state.get("practice_trade_confirm_delete_all"):
+        st.warning(
+            f"練習の売買記録を全{len(trades)}件削除します。この操作は"
+            "取り消せません。"
+        )
+        with st.container(horizontal=True, gap="small"):
+            if st.button(
+                "はい、すべて削除する", key="confirm_delete_all_practice_trades_button"
+            ):
+                for trade in trades:
+                    delete_practice_trade(trade["id"])
+                st.session_state["practice_trade_confirm_delete_all"] = False
+                st.session_state["practice_trade_selected_id"] = None
+                st.rerun()
+            if st.button(
+                "キャンセル", key="cancel_delete_all_practice_trades_button"
+            ):
+                st.session_state["practice_trade_confirm_delete_all"] = False
+                st.rerun()
+        _style_delete_buttons_red()
+    else:
+        if st.button(
+            "練習の売買記録をすべて削除", key="delete_all_practice_trades_button"
+        ):
+            st.session_state["practice_trade_confirm_delete_all"] = True
+            st.rerun()
+        _style_delete_buttons_red()
+
+
+def _render_practice_chart_section():
+
+    """
+    練習チャートタブを描画する
+
+    銘柄検索でチャートを表示しながら、その場で練習の売買記録
+    （practice_tradesテーブル、_render_practice_trade_table参照）を
+    追加できるようにする。売買銘柄タブ（5章）とは完全に別のテーブルで、
+    損益・税計算・NISA区分・保有中/決算済みのセクション分けなどを持たない
+    簡易版（2026-09-13追加。「練習チャートで銘柄を検索して売買記録を
+    残したい。今の売買記録より簡単にしたい」という要望のため）
+
+    銘柄検索は、サイドバーの個別銘柄検索（スキャンタブのフォーカスに
+    連動する）とは別に、このタブ専用のselectboxを持つ（このタブの
+    チャートは検索した銘柄をそのまま表示するだけで、候補一覧・監視銘柄・
+    売買銘柄いずれのフォーカス状態とも連動しない独立した作りのため）
+
+    軍資金設定（practice_settingsテーブル、1行だけの単純な設定値）は
+    株価チャートの直下に表示する（2026-09-13追加。「軍資金の設定を
+    入れることでより現実的な練習ができる。設定した金額が損益と連動して
+    軍資金が上下するように」との要望のため。同日改訂：当初はタブ冒頭に
+    置いていたが「株価チャートの下に移動して」との要望で位置を変更した。
+    そのため銘柄未選択（チャート非表示）時は軍資金設定自体も表示されない）。
+    現在の軍資金 = 初期軍資金 + 決済済み記録の損益合計（簡易計算）で、
+    銘柄をまたいだ全記録を対象にする（検索中の銘柄だけに限らない）。
+    保有中（未決済）記録の含み損益は反映しない
+    """
+
+    # 軍資金の計算・末尾の記録一覧表示のどちらにも使うため、銘柄選択の
+    # 有無に関わらずここで一度だけ取得する
+    practice_trades = get_all_practice_trades()
+
+    st.write("銘柄を検索すると、チャートと練習の売買記録フォームを表示します。")
+
+    practice_stock_options = _load_stock_search_options()
+    practice_selected_label = st.selectbox(
+        "銘柄コードまたは銘柄名で検索",
+        options=[""] + list(practice_stock_options.keys()),
+        index=0,
+        key="practice_stock_search_select",
+        help="入力すると候補が絞り込まれます。",
+    )
+    practice_code = practice_stock_options.get(practice_selected_label)
+
+    if practice_code:
+        # ラベルは"コード 銘柄名"形式（_load_stock_search_options参照）。
+        # 銘柄名自体にスペースを含む場合もあるため、最初のスペースでのみ分ける
+        practice_company_name = practice_selected_label.split(" ", 1)[1]
+
+        st.markdown(f"##### {practice_code} {practice_company_name}")
+        _render_chart_block(practice_code, timeframe, key_prefix="practice")
+
+        st.markdown("##### 軍資金設定")
+
+        stored_initial_capital = get_initial_capital()
+
+        initial_capital_input = st.number_input(
+            "初期軍資金（円）",
+            min_value=0.0,
+            value=float(stored_initial_capital),
+            step=10000.0,
+            key="practice_initial_capital_input",
+            help="練習用の元手。決済済みの売買記録の損益合計と連動して、"
+            "下の「現在の軍資金」に反映されます。",
+        )
+
+        # 値が変わっていれば保存する。number_input自身のウィジェット状態が
+        # 次回以降のrunでも変更後の値を保持するため、ここで明示的に
+        # st.rerun()しなくても以降の計算はinitial_capital_input（今回の値）を
+        # 使えば一貫する
+        if initial_capital_input != stored_initial_capital:
+            update_initial_capital(initial_capital_input)
+
+        closed_practice_trades = [
+            t for t in practice_trades if t["exit_price"] is not None
+        ]
+        realized_pnl = sum(calculate_pnl(t) for t in closed_practice_trades)
+        current_capital = initial_capital_input + realized_pnl
+
+        st.metric(
+            "現在の軍資金",
+            f"{current_capital:,.0f}円",
+            delta=f"{realized_pnl:+,.0f}円（決済済み損益）",
+            help="初期軍資金 + 決済済みの売買記録の損益合計（簡易計算・"
+            "税引前）。未決済（保有中）の記録の含み損益は反映しません。",
+        )
+
+        st.divider()
+
+        current_price = float(
+            _get_cached_chart_data(practice_code, timeframe).iloc[-1]["close"]
+        )
+
+        st.markdown("##### 練習の売買記録を追加")
+
+        with st.form("add_practice_trade_form"):
+            practice_direction_input = st.radio(
+                "方向",
+                options=["long", "short"],
+                format_func=lambda d: DIRECTION_LABELS[d],
+                horizontal=True,
+            )
+            practice_trade_date_input = st.date_input("取引日", value=date.today())
+            practice_entry_price_input = st.number_input(
+                "買値", min_value=0.0, value=current_price
+            )
+            practice_quantity_input = st.number_input(
+                "株数", min_value=1, value=100, step=100
+            )
+            practice_exit_price_input = st.number_input(
+                "売値（未決済なら0のまま）", min_value=0.0, value=0.0
+            )
+            practice_exit_date_input = st.date_input(
+                "売却日（売値を入力した場合のみ）", value=date.today()
+            )
+
+            if st.form_submit_button("記録を追加"):
+                add_practice_trade(
+                    code=practice_code,
+                    company_name=practice_company_name,
+                    direction=practice_direction_input,
+                    trade_date=str(practice_trade_date_input),
+                    entry_price=practice_entry_price_input,
+                    exit_price=(
+                        practice_exit_price_input
+                        if practice_exit_price_input > 0 else None
+                    ),
+                    quantity=int(practice_quantity_input),
+                    exit_date=(
+                        str(practice_exit_date_input)
+                        if practice_exit_price_input > 0 else None
+                    ),
+                )
+                st.success(
+                    f"{practice_code} {practice_company_name} の記録を追加しました"
+                )
+                st.rerun()
+    else:
+        st.info("上の検索欄で銘柄を選ぶと、チャートと記録フォームを表示します。")
+
+    st.divider()
+    st.markdown("##### 練習の売買記録一覧")
+
+    _render_practice_trade_table(practice_trades)
+
+
 with tab_trades:
     st.subheader("売買銘柄（トレード記録）")
 
@@ -2105,3 +2533,9 @@ with tab_watchlist:
     st.subheader("監視銘柄")
 
     _render_watchlist_section()
+
+
+with tab_practice:
+    st.subheader("練習チャート")
+
+    _render_practice_chart_section()
