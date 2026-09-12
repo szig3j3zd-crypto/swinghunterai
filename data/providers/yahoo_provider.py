@@ -30,9 +30,18 @@ class YahooProvider(BaseProvider):
     ):
         """
         Yahoo Financeから株価取得
+
+        全リトライが通信失敗で尽きた場合は最後の例外をそのまま送出する
+        （2026-09-13改訂。以前は空のDataFrameを返しており、「新しいデータ
+        なし（既に最新）」という正常な結果と区別できなかった。呼び出し元の
+        ProviderManagerがこれを"取得失敗"とみなして毎回J-Quantsへも
+        フォールバックしてしまい、既に最新の銘柄1つ1つに対して常に無駄な
+        API呼び出しが発生し、全銘柄更新が不必要に遅くなっていたため）
         """
 
         ticker_obj = yf.Ticker(ticker)
+
+        last_error = None
 
         for attempt in range(retry):
 
@@ -68,6 +77,8 @@ class YahooProvider(BaseProvider):
 
             except Exception as e:
 
+                last_error = e
+
                 print(
                     f"{ticker} 通信失敗 "
                     f"({attempt + 1}/{retry})"
@@ -77,7 +88,7 @@ class YahooProvider(BaseProvider):
 
                 time.sleep(2)
 
-        return pd.DataFrame()
+        raise last_error
 
     def get_stock_list(self):
         """

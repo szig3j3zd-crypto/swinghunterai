@@ -111,8 +111,13 @@ def main():
                 latest_date
             )
 
-            # Provider取得失敗
-            if stock_data is None:
+            # Provider取得失敗（全Providerが例外で失敗した場合、
+            # ProviderManagerはprovider_name=Noneを返す。2026-09-13修正:
+            # 以前はstock_data is Noneをチェックしていたが、全滅時も
+            # ProviderManagerは空のDataFrame（Noneではない）を返すため
+            # このチェックには到達せず、本当の取得失敗が下の「更新データ
+            # なし」扱いになり、失敗としてカウント・記録されていなかった）
+            if provider_name is None:
 
                 print("Provider取得失敗")
 

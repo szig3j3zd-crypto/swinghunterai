@@ -33,6 +33,13 @@ class ProviderManager:
     ):
         """
         株価取得
+
+        Providerが例外を送出した場合のみ次のProviderへフォールバックする。
+        空のDataFrame（「新しいデータなし＝既に最新」という正常な結果）は
+        フォールバックせずそのまま確定として返す（2026-09-13改訂。以前は
+        空のDataFrameも"取得失敗"扱いにしてフォールバックしていたため、
+        既に最新の銘柄1つ1つに対して常に次のProvider（J-Quants）へも
+        無駄な問い合わせが発生し、全銘柄更新が不必要に遅くなっていた）
         """
 
         for provider in self.price_providers:
@@ -50,11 +57,7 @@ class ProviderManager:
                     period=period
                 )
 
-                if data is not None and not data.empty:
-
-                    return provider.name, data
-
-                print("取得失敗")
+                return provider.name, data
 
             except Exception as e:
 
