@@ -2179,6 +2179,50 @@ def _render_watchlist_section():
             st.rerun()
 
 
+def _group_practice_trades_by_year_month(closed_trades):
+
+    """
+    決済済みの練習の売買記録を年→月でグルーピングし、それぞれの損益合計
+    （簡易計算・税引前）も付与する（2026-09-13追加）
+
+    5章の売買銘柄タブのgroup_by_year_and_month（service.trade_service）とは
+    別物。練習チャートは税計算・損益通算を行わない簡易版のため、単純に
+    calculate_pnlを合算するだけの軽量な実装にしている
+
+    Returns
+    -------
+    groups
+        [(year, year_pnl, [(month, month_pnl), ...]), ...]
+        年・月とも降順（新しい順）
+    """
+
+    by_year_month = {}
+
+    for trade in closed_trades:
+        year, month, _ = trade["trade_date"].split("-")
+        by_year_month.setdefault(int(year), {}).setdefault(int(month), []).append(trade)
+
+    groups = []
+
+    for year in sorted(by_year_month.keys(), reverse=True):
+
+        month_groups = []
+        year_trades = []
+
+        for month in sorted(by_year_month[year].keys(), reverse=True):
+            month_trades = by_year_month[year][month]
+            month_groups.append(
+                (month, sum(calculate_pnl(t) for t in month_trades))
+            )
+            year_trades.extend(month_trades)
+
+        groups.append(
+            (year, sum(calculate_pnl(t) for t in year_trades), month_groups)
+        )
+
+    return groups
+
+
 def _render_practice_trade_table(trades):
 
     """
@@ -2190,7 +2234,11 @@ def _render_practice_trade_table(trades):
     簡易版のため）。行の選択は「選択」チェックボックス列で行い（チャート
     表示には連動しない。練習チャートのチャートは検索欄で選んだ銘柄を
     そのまま表示し続けるだけの単純な作りにしている）、選択した1件だけ
-    「選択した記録を削除」ボタンで削除できる
+    「選択した記録を削除」ボタンで削除できる（2026-09-13改訂。一時期
+    チェックボックス列をやめてst.selectbox+編集フォームに変更していたが、
+    「今まで通り記録をチェックし削除できるようにし、日付や値段の編集も
+    直接できるようにして。他のやり方と合わせる」との要望で、5章の
+    売買銘柄タブと同じ、チェックボックス列＋セル直接編集の作りに戻した）
 
     「練習の売買記録をすべて削除」ボタンで全件を一括削除できる
     （2026-09-13追加）。選択操作なしで全記録が消える、単発の削除より
@@ -2199,11 +2247,15 @@ def _render_practice_trade_table(trades):
     記録自体は明示的に削除しない限りDBに残り続ける（他の永続データ同様、
     アプリの再起動・再実行では消えない）
 
-    方向・取引日・買値・売値・売却日・株数はすべて表内で直接編集できる
-    （2026-09-13改訂。以前は方向のみ編集不可にしていたが、「記録した
-    内容を削除や修正できるようにして」との要望を受けて方向も編集可能に
-    した。同日、「売った時の日付も入れれるように」との要望を受けて
-    売却日（exit_date）も追加した）
+    方向・取引日・買値・売値・売却日・株数はすべて表内で直接編集できる。
+    売却日が取引日より前になる編集は保存せず、st.errorで知らせる
+    （2026-09-13追加。「追加」フォーム側もst.date_inputのmin_valueで
+    同様に制限している）
+
+    決済済み記録の損益合計は、全期間に加えて年別・月別も
+    st.caption（小さな文字）で表示する（2026-09-13追加。5章のような
+    st.expanderでの折りたたみ表示はせず、シンプルなテキスト行を
+    並べるだけにとどめている）
 
     tradesは呼び出し側（_render_practice_chart_section）が取得済みの
     一覧をそのまま受け取る（軍資金の計算にも同じ一覧を使うため、
@@ -2317,16 +2369,23 @@ def _render_practice_trade_table(trades):
             or new_exit_date != trade.get("exit_date")
             or row["株数"] != trade["quantity"]
         ):
-            update_practice_trade(
-                trade["id"],
-                direction=new_direction,
-                trade_date=new_trade_date,
-                entry_price=float(row["買値"]),
-                exit_price=new_exit_price,
-                quantity=int(row["株数"]),
-                exit_date=new_exit_date,
-            )
-            st.rerun()
+            if new_exit_date is not None and new_exit_date < new_trade_date:
+                st.error(
+                    f"{trade['code']} {trade['company_name']}: "
+                    "売却日は取引日より前の日付にはできません。変更は"
+                    "保存されませんでした。"
+                )
+            else:
+                update_practice_trade(
+                    trade["id"],
+                    direction=new_direction,
+                    trade_date=new_trade_date,
+                    entry_price=float(row["買値"]),
+                    exit_price=new_exit_price,
+                    quantity=int(row["株数"]),
+                    exit_date=new_exit_date,
+                )
+                st.rerun()
 
     closed_trades = [t for t in trades if t["exit_price"] is not None]
     if closed_trades:
@@ -2335,6 +2394,16 @@ def _render_practice_trade_table(trades):
             f"決済済み{len(closed_trades)}件の損益合計（簡易計算・税引前）: "
             f"{simple_total:+,.0f}円"
         )
+
+        for year, year_pnl, month_groups in _group_practice_trades_by_year_month(
+            closed_trades
+        ):
+            st.caption(f"{year}年の損益（簡易計算・税引前）: {year_pnl:+,.0f}円")
+            for month, month_pnl in month_groups:
+                st.caption(
+                    f"　{year}年{month}月の損益（簡易計算・税引前）: "
+                    f"{month_pnl:+,.0f}円"
+                )
 
     if current_selected_id is not None and current_selected_id in trade_ids:
         if st.button("選択した記録を削除", key="delete_practice_trade_button"):
@@ -2431,13 +2500,17 @@ def _render_practice_chart_section():
 
         st.markdown("##### 軍資金設定")
 
-        stored_initial_capital = get_initial_capital()
+        # 軍資金は円単位（整数）で入力する。min_value/value/stepすべてを
+        # int（float禁止）にすることで、st.number_inputが小数点以下の
+        # 桁を表示しなくなる（2026-09-13改訂。以前はfloatだったため
+        # "2000000.00"のように不要な小数点が表示されていた）
+        stored_initial_capital = int(get_initial_capital())
 
         initial_capital_input = st.number_input(
             "初期軍資金（円）",
-            min_value=0.0,
-            value=float(stored_initial_capital),
-            step=10000.0,
+            min_value=0,
+            value=stored_initial_capital,
+            step=10000,
             key="practice_initial_capital_input",
             help="練習用の元手。決済済みの売買記録の損益合計と連動して、"
             "下の「現在の軍資金」に反映されます。",
@@ -2490,30 +2563,39 @@ def _render_practice_chart_section():
                 "売値（未決済なら0のまま）", min_value=0.0, value=0.0
             )
             practice_exit_date_input = st.date_input(
-                "売却日（売値を入力した場合のみ）", value=date.today()
+                "売却日（売値を入力した場合のみ）",
+                value=max(date.today(), practice_trade_date_input),
+                min_value=practice_trade_date_input,
+                help="取引日より前の日付は選べません",
             )
 
             if st.form_submit_button("記録を追加"):
-                add_practice_trade(
-                    code=practice_code,
-                    company_name=practice_company_name,
-                    direction=practice_direction_input,
-                    trade_date=str(practice_trade_date_input),
-                    entry_price=practice_entry_price_input,
-                    exit_price=(
-                        practice_exit_price_input
-                        if practice_exit_price_input > 0 else None
-                    ),
-                    quantity=int(practice_quantity_input),
-                    exit_date=(
-                        str(practice_exit_date_input)
-                        if practice_exit_price_input > 0 else None
-                    ),
-                )
-                st.success(
-                    f"{practice_code} {practice_company_name} の記録を追加しました"
-                )
-                st.rerun()
+                if (
+                    practice_exit_price_input > 0
+                    and practice_exit_date_input < practice_trade_date_input
+                ):
+                    st.error("売却日は取引日より前の日付にはできません。")
+                else:
+                    add_practice_trade(
+                        code=practice_code,
+                        company_name=practice_company_name,
+                        direction=practice_direction_input,
+                        trade_date=str(practice_trade_date_input),
+                        entry_price=practice_entry_price_input,
+                        exit_price=(
+                            practice_exit_price_input
+                            if practice_exit_price_input > 0 else None
+                        ),
+                        quantity=int(practice_quantity_input),
+                        exit_date=(
+                            str(practice_exit_date_input)
+                            if practice_exit_price_input > 0 else None
+                        ),
+                    )
+                    st.success(
+                        f"{practice_code} {practice_company_name} の記録を追加しました"
+                    )
+                    st.rerun()
     else:
         st.info("上の検索欄で銘柄を選ぶと、チャートと記録フォームを表示します。")
 
