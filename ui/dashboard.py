@@ -25,7 +25,9 @@ from config.config import MAX_PRICE, MIN_MARKET_CAP, MIN_PRICE, MIN_VOLUME
 from database.practice_settings_repository import (
     create_table as create_practice_settings_table,
     get_initial_capital,
+    get_practice_settings,
     update_initial_capital,
+    update_last_practice_view,
 )
 from database.practice_trade_repository import (
     add_practice_trade,
@@ -2472,6 +2474,21 @@ def _render_practice_chart_section():
     現在の軍資金 = 初期軍資金 + 決済済み記録の損益合計（簡易計算）で、
     銘柄をまたいだ全記録を対象にする（検索中の銘柄だけに限らない）。
     保有中（未決済）記録の含み損益は反映しない
+
+    練習中の銘柄・チャートの表示状態（表示期間・表示幅・年月日検索）は
+    practice_settingsテーブルに保存し、このセッションで初めてこのタブを
+    描画するときに復元する（2026-09-13追加。「練習している銘柄を保存
+    できるように。チャートで見ている日付や表示期間なども保存しておき、
+    読み込んだら保存した日付にチャートが来るように」との要望のため）。
+    `_render_chart_block`（4.2節）はこれらの状態を独自のsession_state
+    （`chart_period_pref_practice`等）で管理しており、DBへは保存しない
+    作りのため、ここで前後に読み書きすることで永続化を後付けしている
+    - 復元: このタブを描画する前に、保存済みの値をそれぞれの
+      session_stateキーへ書き込んでおく（キーがまだ存在しない＝
+      ウィジェット未生成の間だけ効く。既存の「最新へ」ボタン等と同じ
+      Streamlitの仕組みを利用）
+    - 保存: `_render_chart_block`の呼び出し後、session_stateに書き戻された
+      現在値を読み取り、DBの値と異なれば保存する
     """
 
     # 軍資金の計算・末尾の記録一覧表示のどちらにも使うため、銘柄選択の
@@ -2481,6 +2498,38 @@ def _render_practice_chart_section():
     st.write("銘柄を検索すると、チャートと練習の売買記録フォームを表示します。")
 
     practice_stock_options = _load_stock_search_options()
+
+    # 保存済みの閲覧状態の復元は、このセッションでこのタブを初めて
+    # 描画するときだけ行う（以降のrunで毎回上書きすると、ユーザーが
+    # その場で変更した表示期間・表示幅・検索日をタブ内の他の操作の
+    # たびに勝手に戻してしまうため）
+    if not st.session_state.get("practice_view_restored"):
+        saved_view = get_practice_settings()
+
+        saved_code = saved_view.get("last_code")
+        if saved_code:
+            code_to_label = {
+                code: label for label, code in practice_stock_options.items()
+            }
+            saved_label = code_to_label.get(saved_code)
+            if saved_label:
+                st.session_state["practice_stock_search_select"] = saved_label
+
+        if saved_view.get("last_period_label"):
+            st.session_state["chart_period_pref_practice"] = (
+                saved_view["last_period_label"]
+            )
+        if saved_view.get("last_width_label"):
+            st.session_state["chart_display_width_bar_target_practice"] = (
+                _width_label_to_bar_count(saved_view["last_width_label"], "daily")
+            )
+        if saved_view.get("last_search_date"):
+            st.session_state["chart_date_search_pref_practice"] = (
+                date.fromisoformat(saved_view["last_search_date"])
+            )
+
+        st.session_state["practice_view_restored"] = True
+
     practice_selected_label = st.selectbox(
         "銘柄コードまたは銘柄名で検索",
         options=[""] + list(practice_stock_options.keys()),
@@ -2497,6 +2546,37 @@ def _render_practice_chart_section():
 
         st.markdown(f"##### {practice_code} {practice_company_name}")
         _render_chart_block(practice_code, timeframe, key_prefix="practice")
+
+        # チャートの表示期間・表示幅・年月日検索は_render_chart_block内で
+        # session_stateへ書き戻されるため、ここで読み取ってDBへ保存する
+        current_period_label = st.session_state.get("chart_period_pref_practice")
+        current_width_bar_target = st.session_state.get(
+            "chart_display_width_bar_target_practice"
+        )
+        current_width_label = (
+            _closest_width_label_for_bar_count(current_width_bar_target, "daily")
+            if current_width_bar_target is not None else None
+        )
+        chart_reference_date = st.session_state.get(
+            "chart_date_search_pref_practice"
+        )
+        current_search_date_str = (
+            chart_reference_date.isoformat() if chart_reference_date else None
+        )
+
+        saved_view = get_practice_settings()
+        if (
+            practice_code != saved_view.get("last_code")
+            or current_period_label != saved_view.get("last_period_label")
+            or current_width_label != saved_view.get("last_width_label")
+            or current_search_date_str != saved_view.get("last_search_date")
+        ):
+            update_last_practice_view(
+                code=practice_code,
+                period_label=current_period_label,
+                width_label=current_width_label,
+                search_date=current_search_date_str,
+            )
 
         st.markdown("##### 軍資金設定")
 
@@ -2552,7 +2632,16 @@ def _render_practice_chart_section():
                 format_func=lambda d: DIRECTION_LABELS[d],
                 horizontal=True,
             )
-            practice_trade_date_input = st.date_input("取引日", value=date.today())
+            # カレンダーを開いたときに表示する年月を、今チャートで見ている
+            # 日付（年月日検索の指定日、未指定なら最新日）に合わせる
+            # （2026-09-13追加。「取引日と売却日はカレンダーを開いたときに
+            # 見ているチャートの年、月に自動で合わせるように」との要望の
+            # ため。value=に渡した日付を含む月がカレンダーの初期表示月に
+            # なる、st.date_inputの標準動作を利用している）
+            practice_date_default = chart_reference_date or date.today()
+            practice_trade_date_input = st.date_input(
+                "取引日", value=practice_date_default
+            )
             practice_entry_price_input = st.number_input(
                 "買値", min_value=0.0, value=current_price
             )
@@ -2564,7 +2653,7 @@ def _render_practice_chart_section():
             )
             practice_exit_date_input = st.date_input(
                 "売却日（売値を入力した場合のみ）",
-                value=max(date.today(), practice_trade_date_input),
+                value=max(practice_date_default, practice_trade_date_input),
                 min_value=practice_trade_date_input,
                 help="取引日より前の日付は選べません",
             )
