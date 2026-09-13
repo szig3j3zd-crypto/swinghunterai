@@ -2270,16 +2270,24 @@ def _render_practice_trade_table(trades):
     チェックボックスで新しく選択した記録があれば、その銘柄・その記録の
     売却日（未決済で売却日が無ければ取引日）にチャートをジャンプさせる
     （2026-09-13追加。「売買記録一覧の銘柄にチェックを入れたら、売却日の
-    日付に合ったチャートを表示できるように」との要望のため）。検索欄
-    （`practice_stock_search_select`）・表示期間（`chart_period_pref_practice`
-    等）・年月日検索（`chart_date_search_pref_practice`等）のsession_state
-    を直接書き換えたうえでst.rerun()し、次の描画でチャート側がそれを
-    読んで反映する。表示期間はジャンプ先の日付を含められる最短のものへ
-    自動で広げる（`_period_label_covering_date`。表示期間が短いままだと
-    古い売却日が範囲外になり、実際には表示期間内最古日にクランプされて
-    しまうため）。対象銘柄が何らかの理由で検索できない場合
-    （廃止・非アクティブ化など）はチャートへの反映をスキップし、
-    st.warningで知らせる
+    日付に合ったチャートを表示できるように」との要望のため）。表示期間は
+    ジャンプ先の日付を含められる最短のものへ自動で広げる
+    （`_period_label_covering_date`。表示期間が短いままだと古い売却日が
+    範囲外になり、実際には表示期間内最古日にクランプされてしまうため）。
+    対象銘柄が何らかの理由で検索できない場合（廃止・非アクティブ化など）
+    はチャートへの反映をスキップし、st.warningで知らせる
+
+    ジャンプ先（銘柄・表示期間・年月日検索）はここで直接
+    session_state（検索欄`practice_stock_search_select`等）へは書き込まず、
+    `practice_pending_jump`という「予約」だけを置いてst.rerun()する
+    （2026-09-13修正。当初は直接書き込んでいたが、検索欄・表示期間・
+    年月日検索の各widgetは、この表より前（_render_practice_chart_section
+    内、_render_chart_blockの呼び出しより前）で既にこのrun中に
+    インスタンス化済みのため、その場で書き込むと「そのrunで既に
+    インスタンス化されたwidgetのkeyは書き換えられない」という
+    StreamlitAPIExceptionになっていた。実際に発生・報告を受けて修正。
+    予約は次のrunの冒頭（_render_practice_chart_section、各widgetの
+    インスタンス化より前）で読み取って適用する）
 
     「練習の売買記録をすべて削除」ボタンで全件を一括削除できる
     （2026-09-13追加）。選択操作なしで全記録が消える、単発の削除より
@@ -2395,11 +2403,19 @@ def _render_practice_trade_table(trades):
             )["date"].max()
             period_label = _period_label_covering_date(latest_date, target_date)
 
-            st.session_state["practice_stock_search_select"] = target_label
-            st.session_state["chart_period_select_practice"] = period_label
-            st.session_state["chart_period_pref_practice"] = period_label
-            st.session_state["chart_date_search_input_practice"] = target_date
-            st.session_state["chart_date_search_pref_practice"] = target_date
+            # 検索欄・表示期間・年月日検索のwidgetは、この表より前
+            # （_render_practice_chart_section内、_render_chart_blockの
+            # 呼び出しより前）で既にこのrun中にインスタンス化済みのため、
+            # それらのwidget keyへ今ここで直接書き込むとStreamlitAPI
+            # Exceptionになる（実際に発生・報告を受けて修正）。「ジャンプ
+            # 予約」だけをsession_stateに置いてrerunし、次のrunの冒頭
+            # （_render_practice_chart_section、各widgetのインスタンス化
+            # より前）で読み取って適用する
+            st.session_state["practice_pending_jump"] = {
+                "label": target_label,
+                "period_label": period_label,
+                "search_date": target_date,
+            }
         else:
             st.warning(
                 f"{newly_selected_trade['code']} "
@@ -2599,6 +2615,34 @@ def _render_practice_chart_section():
             )
 
         st.session_state["practice_view_restored"] = True
+
+    # 記録一覧でチェックした記録へチャートをジャンプさせる予約
+    # （_render_practice_trade_table参照）があれば、ここで適用する
+    # （2026-09-13修正）。表の描画・チェック検出は、この関数の最後に呼ぶ
+    # _render_practice_trade_tableの中、つまり下のselectbox・
+    # _render_chart_blockより後で行われる。そのためチェックを検出した
+    # その場でselectbox等のwidget keyへ直接書き込もうとすると、
+    # Streamlitは「そのrunで既にインスタンス化されたwidgetのkeyは
+    # 書き換えられない」というStreamlitAPIExceptionを出す（実際に発生・
+    # 報告を受けて修正）。検出した側では「ジャンプ予約」だけを
+    # session_state（practice_pending_jump）に置いてrerunし、次のrunの
+    # 冒頭であるここ（各widgetがインスタンス化されるより前）で読み取って
+    # 適用することで回避する
+    pending_jump = st.session_state.pop("practice_pending_jump", None)
+    if pending_jump:
+        st.session_state["practice_stock_search_select"] = pending_jump["label"]
+        st.session_state["chart_period_select_practice"] = (
+            pending_jump["period_label"]
+        )
+        st.session_state["chart_period_pref_practice"] = (
+            pending_jump["period_label"]
+        )
+        st.session_state["chart_date_search_input_practice"] = (
+            pending_jump["search_date"]
+        )
+        st.session_state["chart_date_search_pref_practice"] = (
+            pending_jump["search_date"]
+        )
 
     practice_selected_label = st.selectbox(
         "銘柄コードまたは銘柄名で検索",

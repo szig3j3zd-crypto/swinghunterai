@@ -902,17 +902,27 @@ timeframe列は後から追加したため、`create_table()`内で
   - 新しく選択した記録があれば、その銘柄・その記録の売却日（未決済で
     売却日が無ければ取引日）にチャートをジャンプさせる（2026-09-13
     追加。「売買記録一覧の銘柄にチェックを入れたら、売却日の日付に
-    合ったチャートを表示できるように」との要望のため。検索欄
-    （`practice_stock_search_select`）・表示期間
-    （`chart_period_select_practice`/`chart_period_pref_practice`）・
-    年月日検索（`chart_date_search_input_practice`/
-    `chart_date_search_pref_practice`）のsession_stateを直接書き換えて
-    からst.rerun()し、次の描画でチャート側がそれを読んで反映する。
-    表示期間はジャンプ先の日付を含められる最短のものへ自動で広げる
+    合ったチャートを表示できるように」との要望のため）。表示期間は
+    ジャンプ先の日付を含められる最短のものへ自動で広げる
     （`_period_label_covering_date`。表示期間が短いままだと古い売却日が
     範囲外になり、実際には表示期間内最古日にクランプされてしまうため）。
     対象銘柄が何らかの理由で検索できない場合（廃止・非アクティブ化など）
     はチャートへの反映をスキップし、st.warningで知らせる
+    - 実装は2段階になっている（2026-09-13修正）。`_render_practice_trade_table`
+      は表の描画時点（`_render_practice_chart_section`の後半、検索欄
+      `practice_stock_search_select`や`_render_chart_block`のウィジェットが
+      既にこの回の描画で生成された後）で呼ばれるため、その場で
+      `practice_stock_search_select`等のsession_stateを直接書き換えると
+      「ウィジェット生成後にsession_stateを変更できない」という
+      StreamlitAPIExceptionでクラッシュする（本番で実際に発生し、
+      「売買銘柄一覧の銘柄にチェックを入れるとエラーになる」として報告された）。
+      そのため表側ではジャンプ先の情報（銘柄・表示期間・検索日）を
+      `practice_pending_jump`という非ウィジェットのsession_stateに保存する
+      だけに留めてst.rerun()し、`_render_practice_chart_section`の冒頭
+      （検索欄など、いかなるウィジェットも生成する前）でこれを読み出して
+      `practice_stock_search_select`・`chart_period_select_practice`/
+      `chart_period_pref_practice`・`chart_date_search_input_practice`/
+      `chart_date_search_pref_practice`に反映してから通常の描画を行う
 - 「損益」列がマイナスの行は、5章と同じ`_style_negative_pnl_red()`を
   再利用して赤字表示する。ただし5章と異なり行全体を編集不可にする制約は
   課していない（「損益」列自体は常に編集不可の計算列のため、その列だけ
