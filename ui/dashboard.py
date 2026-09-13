@@ -2320,12 +2320,12 @@ def _render_practice_trade_table(trades):
                 "銘柄名": trade["company_name"],
                 "方向": DIRECTION_LABELS[trade["direction"]],
                 "取引日": date.fromisoformat(trade["trade_date"]),
-                "買値": trade["entry_price"],
-                "売値": trade["exit_price"],
                 "売却日": (
                     date.fromisoformat(trade["exit_date"])
                     if trade.get("exit_date") else None
                 ),
+                "買値": trade["entry_price"],
+                "売値": trade["exit_price"],
                 "株数": trade["quantity"],
                 "損益": calculate_pnl(trade),
             }
@@ -2704,10 +2704,10 @@ def _render_practice_chart_section():
             )
             # カレンダーを開いたときに表示する年月を、今チャートで見ている
             # 日付（年月日検索の指定日、未指定なら最新日）に合わせる
-            # （2026-09-13追加。「取引日と売却日はカレンダーを開いたときに
-            # 見ているチャートの年、月に自動で合わせるように」との要望の
-            # ため。value=に渡した日付を含む月がカレンダーの初期表示月に
-            # なる、st.date_inputの標準動作を利用している）
+            # （2026-09-13追加。「取引日はカレンダーを開いたときに見ている
+            # チャートの年、月に自動で合わせるように」との要望のため。
+            # value=に渡した日付を含む月がカレンダーの初期表示月になる、
+            # st.date_inputの標準動作を利用している）
             practice_date_default = chart_reference_date or date.today()
             practice_trade_date_input = st.date_input(
                 "取引日", value=practice_date_default
@@ -2718,43 +2718,27 @@ def _render_practice_chart_section():
             practice_quantity_input = st.number_input(
                 "株数", min_value=1, value=100, step=100
             )
-            practice_exit_price_input = st.number_input(
-                "売値（未決済なら0のまま）", min_value=0.0, value=0.0
-            )
-            practice_exit_date_input = st.date_input(
-                "売却日（売値を入力した場合のみ）",
-                value=max(practice_date_default, practice_trade_date_input),
-                min_value=practice_trade_date_input,
-                help="取引日より前の日付は選べません",
-            )
 
+            # 売値・売却日はここでは入力しない（2026-09-13改訂。「追加」
+            # フォームには売値・売却日の項目は不要、売買記録一覧で記載する
+            # ため」との要望を受けて削除した。追加時は常に未決済として
+            # 登録し、決済（売値・売却日の入力）は一覧表（
+            # _render_practice_trade_table）のセル直接編集で行う）
             if st.form_submit_button("記録を追加"):
-                if (
-                    practice_exit_price_input > 0
-                    and practice_exit_date_input < practice_trade_date_input
-                ):
-                    st.error("売却日は取引日より前の日付にはできません。")
-                else:
-                    add_practice_trade(
-                        code=practice_code,
-                        company_name=practice_company_name,
-                        direction=practice_direction_input,
-                        trade_date=str(practice_trade_date_input),
-                        entry_price=practice_entry_price_input,
-                        exit_price=(
-                            practice_exit_price_input
-                            if practice_exit_price_input > 0 else None
-                        ),
-                        quantity=int(practice_quantity_input),
-                        exit_date=(
-                            str(practice_exit_date_input)
-                            if practice_exit_price_input > 0 else None
-                        ),
-                    )
-                    st.success(
-                        f"{practice_code} {practice_company_name} の記録を追加しました"
-                    )
-                    st.rerun()
+                add_practice_trade(
+                    code=practice_code,
+                    company_name=practice_company_name,
+                    direction=practice_direction_input,
+                    trade_date=str(practice_trade_date_input),
+                    entry_price=practice_entry_price_input,
+                    exit_price=None,
+                    quantity=int(practice_quantity_input),
+                    exit_date=None,
+                )
+                st.success(
+                    f"{practice_code} {practice_company_name} の記録を追加しました"
+                )
+                st.rerun()
     else:
         st.info("上の検索欄で銘柄を選ぶと、チャートと記録フォームを表示します。")
 
