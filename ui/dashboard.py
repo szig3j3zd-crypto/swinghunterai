@@ -185,6 +185,33 @@ def _period_label_to_offset(label):
     return pd.DateOffset(years=int(label[:-1]))
 
 
+def _period_label_covering_date(latest_date, target_date):
+
+    """
+    target_dateを表示期間の範囲内（period_start以降）に含められる、
+    CHART_PERIOD_OPTIONSの中で最も短い表示期間ラベルを返す
+    （2026-09-13追加。練習チャートタブで売買記録の売却日にチャートを
+    ジャンプさせる機能のため。表示期間が短いままだと、古い売却日が
+    表示期間の範囲外になり、年月日検索でその日を指定しても表示期間内で
+    最も古い日にクランプされてしまうため、必要な分だけ広げる）。
+    どのオプションでも足りなければ最長のもの（最後の要素）を返す
+
+    Parameters
+    ----------
+    latest_date
+        銘柄の最新データ日（pandas.Timestamp）
+    target_date
+        表示期間内に含めたい日付（datetime.date）
+    """
+
+    for label in CHART_PERIOD_OPTIONS:
+        period_start = (latest_date - _period_label_to_offset(label)).date()
+        if period_start <= target_date:
+            return label
+
+    return CHART_PERIOD_OPTIONS[-1]
+
+
 # _width_label_to_bar_count()で表示幅ラベルを暦日数に変換する際の基準日。
 # DateOffsetの加算結果（月内日数の違い等）が呼び出しのたびにブレないよう
 # 固定の日付を使う（本数はあくまで時間足間の比較用の概算値のため、
@@ -2233,14 +2260,26 @@ def _render_practice_trade_table(trades):
     売買銘柄タブ（_render_trade_table）と違い、保有中/決算済みのセクション
     分け・時間足・NISA・税計算は持たず、全件を1つの表にまとめて表示する
     （練習チャートタブは「今の売買記録より簡単に」という要望のための
-    簡易版のため）。行の選択は「選択」チェックボックス列で行い（チャート
-    表示には連動しない。練習チャートのチャートは検索欄で選んだ銘柄を
-    そのまま表示し続けるだけの単純な作りにしている）、選択した1件だけ
-    「選択した記録を削除」ボタンで削除できる（2026-09-13改訂。一時期
-    チェックボックス列をやめてst.selectbox+編集フォームに変更していたが、
-    「今まで通り記録をチェックし削除できるようにし、日付や値段の編集も
-    直接できるようにして。他のやり方と合わせる」との要望で、5章の
+    簡易版のため）。行の選択は「選択」チェックボックス列で行い、選択した
+    1件だけ「選択した記録を削除」ボタンで削除できる（2026-09-13改訂。
+    一時期チェックボックス列をやめてst.selectbox+編集フォームに変更して
+    いたが、「今まで通り記録をチェックし削除できるようにし、日付や値段の
+    編集も直接できるようにして。他のやり方と合わせる」との要望で、5章の
     売買銘柄タブと同じ、チェックボックス列＋セル直接編集の作りに戻した）
+
+    チェックボックスで新しく選択した記録があれば、その銘柄・その記録の
+    売却日（未決済で売却日が無ければ取引日）にチャートをジャンプさせる
+    （2026-09-13追加。「売買記録一覧の銘柄にチェックを入れたら、売却日の
+    日付に合ったチャートを表示できるように」との要望のため）。検索欄
+    （`practice_stock_search_select`）・表示期間（`chart_period_pref_practice`
+    等）・年月日検索（`chart_date_search_pref_practice`等）のsession_state
+    を直接書き換えたうえでst.rerun()し、次の描画でチャート側がそれを
+    読んで反映する。表示期間はジャンプ先の日付を含められる最短のものへ
+    自動で広げる（`_period_label_covering_date`。表示期間が短いままだと
+    古い売却日が範囲外になり、実際には表示期間内最古日にクランプされて
+    しまうため）。対象銘柄が何らかの理由で検索できない場合
+    （廃止・非アクティブ化など）はチャートへの反映をスキップし、
+    st.warningで知らせる
 
     「練習の売買記録をすべて削除」ボタンで全件を一括削除できる
     （2026-09-13追加）。選択操作なしで全記録が消える、単発の削除より
@@ -2337,6 +2376,37 @@ def _render_practice_trade_table(trades):
     ]
 
     if newly_selected_ids:
+        newly_selected_trade = next(
+            t for t in trades if t["id"] == newly_selected_ids[0]
+        )
+
+        code_to_label = {
+            code: label for label, code in _load_stock_search_options().items()
+        }
+        target_label = code_to_label.get(newly_selected_trade["code"])
+
+        if target_label:
+            target_date = date.fromisoformat(
+                newly_selected_trade.get("exit_date")
+                or newly_selected_trade["trade_date"]
+            )
+            latest_date = _get_cached_chart_data(
+                newly_selected_trade["code"], timeframe
+            )["date"].max()
+            period_label = _period_label_covering_date(latest_date, target_date)
+
+            st.session_state["practice_stock_search_select"] = target_label
+            st.session_state["chart_period_select_practice"] = period_label
+            st.session_state["chart_period_pref_practice"] = period_label
+            st.session_state["chart_date_search_input_practice"] = target_date
+            st.session_state["chart_date_search_pref_practice"] = target_date
+        else:
+            st.warning(
+                f"{newly_selected_trade['code']} "
+                f"{newly_selected_trade['company_name']} は現在検索できないため、"
+                "チャートには反映できませんでした。"
+            )
+
         st.session_state["practice_trade_selected_id"] = newly_selected_ids[0]
         st.rerun()
     elif (

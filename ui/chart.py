@@ -1446,6 +1446,33 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             window.parent.__swingHunterScrollKeyHandler = keydownHandler;
             window.parent.document.addEventListener("keydown", keydownHandler, true);
 
+            // チャート画面外をクリック/タップしたら詳細情報（ホバー表示・
+            // 縦の点線）を消す（2026-09-13追加。「チャートの詳細情報は
+            // チャート画面外を選択、またはタップしたら消えるように」との
+            // 要望のため。スマホではタップがマウスのhoverに相当する
+            // 状態を作るが、指を離してもmouseleaveのような「離れた」
+            // イベントが発生しないため、次にチャート上の別の場所へ
+            // タップし直すまで詳細情報が表示されたままになっていた）。
+            // 矢印キーのリスナーと同じ理由で、常にこのチャート
+            // （この再描画）の分だけを残す
+            if (window.parent.__swingHunterUnhoverClickHandler) {{
+                window.parent.document.removeEventListener(
+                    "click", window.parent.__swingHunterUnhoverClickHandler, true
+                );
+            }}
+
+            const unhoverClickHandler = function(e) {{
+                const target = window.parent.__swingHunterActiveChart;
+                if (!target || !window.parent.Plotly || !window.parent.Plotly.Fx) {{
+                    return;
+                }}
+                if (target.contains(e.target)) return;
+
+                window.parent.Plotly.Fx.unhover(target);
+            }};
+            window.parent.__swingHunterUnhoverClickHandler = unhoverClickHandler;
+            window.parent.document.addEventListener("click", unhoverClickHandler, true);
+
         }}
 
         // st.plotly_chart側の描画は非同期のため、このscriptが先に動いて
