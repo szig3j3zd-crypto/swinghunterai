@@ -53,7 +53,18 @@ Streamlit Community Cloud（ui/dashboard.py をデプロイ、GitHub連携）
 - **Embedded Replicaは初回接続時に丸ごと初期同期する**。ローカルの
   `data/stock_replica.db`が存在しない最初の1回は、リモートDB全体
   （現状485MB）をダウンロードするため数分Streamlitサーバーが応答しなくなる。
-  2回目以降は差分同期のみなので一瞬で終わる
+  2026-08-30に追加された`database/db.py`の`sync_connection()`
+  （書き込み直後にEmbedded Replicaの変更を即座にTursoへ反映させる仕組み）は、
+  **Tursoへ直接リモート接続するconn（Streamlit Community Cloud側、
+  `TURSO_EMBEDDED_REPLICA`未設定）に対して呼んでもエラーになる**。直接
+  リモート接続のlibsql.Connectionも`sync`属性自体は持つため、
+  「接続オブジェクトが`sync`属性を持つか」だけでは判定できない
+  （Embedded Replicaを持たない接続に対する`sync()`はローカルキャッシュが
+  無いため失敗する）。この結果、Streamlit Cloud上でスマホから売買記録を
+  追加しようとするたびに書き込み系のrepository関数（`sync_connection()`を
+  経由するもの全て）がValueErrorでクラッシュしていた。2026-09-13、
+  `sync_connection()`側で`TURSO_EMBEDDED_REPLICA`が真のときだけ`sync()`を
+  呼ぶよう修正して解消した
 
 ---
 

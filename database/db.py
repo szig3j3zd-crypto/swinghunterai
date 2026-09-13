@@ -68,7 +68,20 @@ def sync_connection(conn):
     接続が切れ、スマホ側（Turso直結）に反映されないことがある。close()の前に
     明示的に呼ぶことでタイマー任せにしない。sqlite3.Connection（テスト実行時・
     Turso未設定時）にはsync()が無いため何もしない
+
+    TURSO_EMBEDDED_REPLICA=false（Streamlit Community Cloud等、Tursoへ直接
+    リモート接続するconn）の場合は呼び出し自体をスキップする（2026-09-13
+    修正）。直接リモート接続のlibsql.Connectionもsync属性自体は持っており
+    従来のgetattrチェックだけでは呼び出されてしまうが、ローカルの
+    Embedded Replicaを持たない接続に対するsync()はエラーになり、
+    Streamlit Cloud上でスマホから売買記録を追加しようとするたびに
+    ValueErrorでクラッシュしていた（`add_practice_trade`等、書き込み系の
+    repository関数はすべてこの関数を経由するため、原因箇所によらず同じ
+    症状になる）
     """
+
+    if not TURSO_EMBEDDED_REPLICA:
+        return
 
     sync = getattr(conn, "sync", None)
 
