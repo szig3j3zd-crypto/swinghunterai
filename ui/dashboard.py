@@ -2296,10 +2296,21 @@ def _render_practice_trade_table(trades):
     記録自体は明示的に削除しない限りDBに残り続ける（他の永続データ同様、
     アプリの再起動・再実行では消えない）
 
-    方向・取引日・買値・売値・売却日・株数はすべて表内で直接編集できる。
-    売却日が取引日より前になる編集は保存せず、st.errorで知らせる
-    （2026-09-13追加。「追加」フォーム側もst.date_inputのmin_valueで
-    同様に制限している）
+    方向・買値・売値・株数は表内で直接編集できる。取引日・売却日は表の
+    セルでは編集不可（read only）にし、選択中の1件だけ表の直後の専用欄
+    （st.date_input）で編集する（2026-09-16改訂。以前は取引日・売却日も
+    表のDateColumnで直接編集できたが、これはブラウザ標準のネイティブ
+    日付選択（グレーで小さい、スマホでは端末の日付選択）になり、追加
+    フォームの作り込まれたカレンダー（月・年をドロップダウンで選べ、
+    選択日を丸で示す）と見た目が揃わないうえ、空欄セルでは開いたときの
+    年月をこちらから指定できない。「一覧表と追加フォームのカレンダーを
+    追加フォームのカレンダーに統一して」「売却日のカレンダーは開いたら
+    取引日と同じ年月にして」の両方を満たすには、Streamlitの標準部品の
+    まま表セル編集を続ける方法が無かったため、日付だけこの専用欄に
+    切り出した。売却日は「売却日を設定する」チェックで有無を切り替え、
+    未入力から設定する際のカレンダー初期表示月は取引日に合わせる
+    （value=に取引日を渡す。st.date_inputの標準動作）。min_valueで取引日
+    より前の売却日も選べないようにしている
 
     決済済み記録の損益合計は、全期間に加えて年別・月別も
     st.caption（小さな文字）で表示する（2026-09-13追加。5章のような
@@ -2352,7 +2363,13 @@ def _render_practice_trade_table(trades):
         # 過去の編集状態を引きずらないようにする（5章と同じ理由）
         key=f"practice_trade_editor_{current_selected_id}",
         width="stretch",
-        disabled=["コード", "銘柄名", "損益"],
+        # 取引日・売却日はこのセルでは編集不可（2026-09-16改訂）。表内の
+        # DateColumnはブラウザ標準のネイティブ日付選択（グレーで小さい、
+        # 追加フォームのst.date_inputとは別物のUI）になり、「追加フォームの
+        # カレンダーに統一して」「売却日は開いたら取引日と同じ年月にして」
+        # との要望に応えられない制約があるため、日付だけは下の編集欄
+        # （st.date_input、追加フォームと同じ見た目）に切り出した
+        disabled=["コード", "銘柄名", "損益", "取引日", "売却日"],
         column_config={
             "選択": st.column_config.CheckboxColumn(
                 help="削除する記録を選びます", pinned=True
@@ -2363,13 +2380,16 @@ def _render_practice_trade_table(trades):
                 options=list(DIRECTION_LABELS.values()),
                 help="登録を間違えた場合はここで修正できます",
             ),
-            "取引日": st.column_config.DateColumn(format="YYYY-MM-DD"),
+            "取引日": st.column_config.DateColumn(
+                format="YYYY-MM-DD",
+                help="変更するには記録を選択し、下の編集欄で行います",
+            ),
             "売値": st.column_config.NumberColumn(
                 help="値を入れると決済済みとして損益を計算します"
             ),
             "売却日": st.column_config.DateColumn(
                 format="YYYY-MM-DD",
-                help="決済（売却）した日を入力できます",
+                help="変更するには記録を選択し、下の編集欄で行います",
             ),
             "損益": st.column_config.NumberColumn(
                 help="簡易計算（税計算はしません）。未決済なら空欄です"
@@ -2432,21 +2452,66 @@ def _render_practice_trade_table(trades):
         st.session_state["practice_trade_selected_id"] = None
         st.rerun()
 
+    # 選択中の1件だけ、取引日・売却日を追加フォームと同じst.date_inputで
+    # 編集する欄を表の直後に出す（2026-09-16追加。「一覧表と追加フォームの
+    # カレンダーを追加フォームのカレンダーに統一して」「売却日のカレンダーは
+    # 開いたときに取引日と同じ年月が開くように」との要望のため。表の
+    # DateColumnセル編集はブラウザ標準のネイティブ日付選択になり、追加
+    # フォームの作り込まれたカレンダーとは見た目を揃えられないうえ、
+    # 空欄セルでは開いたときの年月をこちらから指定できない制約があるため、
+    # 日付だけはここに切り出した。方向・買値・売値・株数は今まで通り表の
+    # セルで直接編集する）
+    edit_trade_date_input = None
+    edit_exit_date_input = None
+    if current_selected_id is not None and current_selected_id in trade_ids:
+        selected_trade = next(t for t in trades if t["id"] == current_selected_id)
+
+        st.markdown("##### 選択した記録の取引日・売却日を編集")
+        edit_trade_date_input = st.date_input(
+            "取引日",
+            value=date.fromisoformat(selected_trade["trade_date"]),
+            key=f"practice_edit_trade_date_{current_selected_id}",
+        )
+        edit_settled_input = st.checkbox(
+            "売却日を設定する（未決済に戻す場合はチェックを外します）",
+            value=selected_trade.get("exit_date") is not None,
+            key=f"practice_edit_settled_{current_selected_id}",
+        )
+        if edit_settled_input:
+            # 売却日が未入力だった場合のカレンダー初期表示月を取引日に
+            # 合わせる（value=に渡した日付を含む月がカレンダーの初期表示
+            # 月になる、st.date_inputの標準動作を利用）。min_valueで取引日
+            # より前の選択自体もできなくする
+            exit_date_default = (
+                date.fromisoformat(selected_trade["exit_date"])
+                if selected_trade.get("exit_date")
+                else edit_trade_date_input
+            )
+            if exit_date_default < edit_trade_date_input:
+                exit_date_default = edit_trade_date_input
+            edit_exit_date_input = st.date_input(
+                "売却日",
+                value=exit_date_default,
+                min_value=edit_trade_date_input,
+                key=f"practice_edit_exit_date_{current_selected_id}",
+            )
+
     direction_labels_inverse = {v: k for k, v in DIRECTION_LABELS.items()}
 
     for trade in trades:
         row = edited_df.loc[trade["id"]]
         new_direction = direction_labels_inverse[row["方向"]]
-        new_trade_date = (
-            trade["trade_date"] if pd.isna(row["取引日"])
-            else pd.Timestamp(row["取引日"]).strftime("%Y-%m-%d")
-        )
+        if trade["id"] == current_selected_id:
+            new_trade_date = str(edit_trade_date_input)
+            new_exit_date = (
+                str(edit_exit_date_input)
+                if edit_exit_date_input is not None else None
+            )
+        else:
+            new_trade_date = trade["trade_date"]
+            new_exit_date = trade.get("exit_date")
         new_exit_price = (
             None if pd.isna(row["売値"]) else float(row["売値"])
-        )
-        new_exit_date = (
-            None if pd.isna(row["売却日"])
-            else pd.Timestamp(row["売却日"]).strftime("%Y-%m-%d")
         )
 
         if (
