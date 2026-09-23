@@ -2296,18 +2296,17 @@ def _render_practice_trade_table(trades):
     記録自体は明示的に削除しない限りDBに残り続ける（他の永続データ同様、
     アプリの再起動・再実行では消えない）
 
-    方向・売却日・買値・売値・株数は表内で直接編集できる。取引日だけは
-    表のセルでは編集不可（read only）にし、選択中の1件だけ表の直後の
-    専用欄（st.date_input）で編集する（2026-09-16改訂。一時期は売却日も
-    この専用欄に切り出し、表のDateColumnでの直接編集をやめていたが
-    （ブラウザ標準のネイティブ日付選択になり追加フォームの
-    st.date_inputと見た目が揃わないため）、「売却日のカレンダーは元に
-    戻して」との要望を受けて売却日だけ表のセル直接編集（DateColumn）に
-    戻した。取引日は専用欄のまま据え置き。そのため取引日の追加フォームと
-    の見た目統一・売却日のカレンダー年月自動調整は、取引日側でのみ有効）
-    売却日が取引日より前になる編集は保存せず、st.errorで知らせる
-    （2026-09-13追加。「追加」フォーム側もst.date_inputのmin_valueで
-    同様に制限している）
+    方向・取引日・買値・売値・売却日・株数はすべて表内で直接編集できる
+    （2026-09-16改訂。一時期は取引日・売却日を専用のst.date_input編集欄に
+    切り出し、表のDateColumnでの直接編集をやめていたが（ブラウザ標準の
+    ネイティブ日付選択になり追加フォームのst.date_inputと見た目が揃わない
+    ため）、「連取チャートの売買記録一覧の取引日も売却日と同じく直接日付を
+    編集できるようにして」との要望を受けて取引日も表のセル直接編集
+    （DateColumn）に戻し、専用編集欄自体を廃止した。そのため一覧表の
+    日付カレンダーは追加フォームとは見た目が揃わない状態に戻っている
+    （意図的な現状）。売却日が取引日より前になる編集は保存せず、
+    st.errorで知らせる（2026-09-13追加。「追加」フォーム側もst.date_input
+    のmin_valueで同様に制限している）
 
     決済済み記録の損益合計は、全期間に加えて年別・月別も
     st.caption（小さな文字）で表示する（2026-09-13追加。5章のような
@@ -2360,14 +2359,7 @@ def _render_practice_trade_table(trades):
         # 過去の編集状態を引きずらないようにする（5章と同じ理由）
         key=f"practice_trade_editor_{current_selected_id}",
         width="stretch",
-        # 取引日はこのセルでは編集不可（2026-09-16改訂）。表内の
-        # DateColumnはブラウザ標準のネイティブ日付選択（グレーで小さい、
-        # 追加フォームのst.date_inputとは別物のUI）になり、「追加フォームの
-        # カレンダーに統一して」との要望に応えられない制約があるため、
-        # 下の編集欄（st.date_input、追加フォームと同じ見た目）に切り出した。
-        # 売却日は「売却日のカレンダーは元に戻して」との要望でセル直接編集に
-        # 戻したため、ここには含めない
-        disabled=["コード", "銘柄名", "損益", "取引日"],
+        disabled=["コード", "銘柄名", "損益"],
         column_config={
             "選択": st.column_config.CheckboxColumn(
                 help="削除する記録を選びます", pinned=True
@@ -2378,10 +2370,7 @@ def _render_practice_trade_table(trades):
                 options=list(DIRECTION_LABELS.values()),
                 help="登録を間違えた場合はここで修正できます",
             ),
-            "取引日": st.column_config.DateColumn(
-                format="YYYY-MM-DD",
-                help="変更するには記録を選択し、下の編集欄で行います",
-            ),
+            "取引日": st.column_config.DateColumn(format="YYYY-MM-DD"),
             "売値": st.column_config.NumberColumn(
                 help="値を入れると決済済みとして損益を計算します"
             ),
@@ -2450,35 +2439,14 @@ def _render_practice_trade_table(trades):
         st.session_state["practice_trade_selected_id"] = None
         st.rerun()
 
-    # 選択中の1件だけ、取引日を追加フォームと同じst.date_inputで編集する
-    # 欄を表の直後に出す（2026-09-16追加。「一覧表と追加フォームのカレンダーを
-    # 追加フォームのカレンダーに統一して」との要望のため。表のDateColumn
-    # セル編集はブラウザ標準のネイティブ日付選択になり、追加フォームの
-    # 作り込まれたカレンダーとは見た目を揃えられないため、取引日だけは
-    # ここに切り出した。売却日は当初ここに含めていたが、「売却日のカレンダー
-    # は元に戻して」との要望で表のセル直接編集（DateColumn）に戻したため、
-    # この欄には含めない。方向・売却日・買値・売値・株数は今まで通り表の
-    # セルで直接編集する）
-    edit_trade_date_input = None
-    if current_selected_id is not None and current_selected_id in trade_ids:
-        selected_trade = next(t for t in trades if t["id"] == current_selected_id)
-
-        st.markdown("##### 選択した記録の取引日を編集")
-        edit_trade_date_input = st.date_input(
-            "取引日",
-            value=date.fromisoformat(selected_trade["trade_date"]),
-            key=f"practice_edit_trade_date_{current_selected_id}",
-        )
-
     direction_labels_inverse = {v: k for k, v in DIRECTION_LABELS.items()}
 
     for trade in trades:
         row = edited_df.loc[trade["id"]]
         new_direction = direction_labels_inverse[row["方向"]]
         new_trade_date = (
-            str(edit_trade_date_input)
-            if trade["id"] == current_selected_id
-            else trade["trade_date"]
+            trade["trade_date"] if pd.isna(row["取引日"])
+            else pd.Timestamp(row["取引日"]).strftime("%Y-%m-%d")
         )
         new_exit_price = (
             None if pd.isna(row["売値"]) else float(row["売値"])
