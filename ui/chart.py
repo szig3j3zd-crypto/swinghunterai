@@ -32,6 +32,9 @@ MA_LABELS = {
     "sma100": "100日線",
 }
 GRID_COLOR = "rgba(128, 128, 128, 0.18)"
+# 月初の縦線は横方向の目印として使うため、横のグリッド線（GRID_COLOR）より
+# 少し濃くして見つけやすくする
+MONTH_GRIDLINE_COLOR = "rgba(128, 128, 128, 0.35)"
 Y_AXIS_PADDING_RATIO = 0.04
 
 # 価格軸の目盛間隔（dtick）を選ぶ際の目安本数。build_scroll_sync_script側の
@@ -192,6 +195,38 @@ def _compute_date_rangebreaks(df):
     missing_days = all_days.difference(existing_dates)
 
     return [dict(values=missing_days)]
+
+
+def _compute_month_start_dates(df):
+
+    """
+    チャートに表示する月初の縦線を引く日付を、月ごとに1件ずつ求める
+    （2026-09-26追加。「全てのチャート画面の横軸に一か月ごとに縦線を
+    追加して。１日を基準とする」との要望のため）
+
+    各月の1日はそのものが土日・祝日で実データが無いことが多い
+    （週足・月足ならほとんどの日が該当する）ため、「その月の1日以降で
+    最初に実データが存在する日」を線を引く位置とする。これにより、
+    rangebreaksで圧縮された後のx軸上でも必ず実在するローソク足の位置に
+    ぴったり重なる（データの無い日を指定すると、rangebreaksで潰された
+    範囲の境界にスナップされるだけで見た目の位置がずれるため）
+    """
+
+    dates = pd.to_datetime(df["date"]).dt.normalize().sort_values()
+    if dates.empty:
+        return []
+
+    month_starts = pd.date_range(
+        dates.iloc[0].replace(day=1), dates.iloc[-1], freq="MS"
+    )
+
+    target_dates = []
+    for month_start in month_starts:
+        on_or_after = dates[dates >= month_start]
+        if not on_or_after.empty:
+            target_dates.append(on_or_after.iloc[0])
+
+    return target_dates
 
 
 def _format_or_dash(value, fmt):
@@ -423,6 +458,24 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
     # 土日・祝日など、データの無い日をx軸から除外し、ローソク足の間隔を
     # 詰めて連続して見えるようにする
     fig.update_xaxes(rangebreaks=_compute_date_rangebreaks(df))
+
+    # 月初（1日を基準）に縦線を追加する（2026-09-26追加。「全てのチャート
+    # 画面の横軸に一か月ごとに縦線を追加して。１日を基準とする」との要望の
+    # ため）。yref="paper"でy0=0・y1=1にすることで、出来高サブプロットの
+    # 有無に関わらず、常にチャート全体（ローソク足～出来高）を縦断する線に
+    # なる（row/col指定でサブプロットごとに描く方式より単純で確実）
+    for month_start_date in _compute_month_start_dates(df):
+        fig.add_shape(
+            type="line",
+            xref="x",
+            yref="paper",
+            x0=month_start_date,
+            x1=month_start_date,
+            y0=0,
+            y1=1,
+            line=dict(color=MONTH_GRIDLINE_COLOR, width=1),
+            layer="below",
+        )
 
     # 出来高チャート下の日付ラベル・ホバー表示の日付を日本式（年/月、月/日）に統一する。
     # 既定は"Mar 2026"のような英語表記になるため変更する。Plotly側の自動目盛間隔

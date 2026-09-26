@@ -1,6 +1,6 @@
 import pandas as pd
 
-from ui.chart import compute_visible_window
+from ui.chart import _compute_month_start_dates, compute_visible_window
 
 
 def _df():
@@ -53,3 +53,31 @@ def test_compute_visible_window_returns_none_ranges_when_no_data_in_window():
     assert x_range == [pd.Timestamp("2030-01-01"), pd.Timestamp("2030-01-31")]
     assert y_range is None
     assert volume_range is None
+
+
+def test_compute_month_start_dates_uses_the_1st_when_data_exists_on_it():
+    df = _df()
+
+    result = _compute_month_start_dates(df)
+
+    assert result == [pd.Timestamp("2026-01-01"), pd.Timestamp("2026-02-01")]
+
+
+def test_compute_month_start_dates_snaps_forward_when_1st_has_no_data():
+    df = pd.DataFrame({
+        "date": pd.to_datetime([
+            "2026-03-03", "2026-03-04", "2026-04-02", "2026-04-03",
+        ]),
+    })
+
+    result = _compute_month_start_dates(df)
+
+    # 3/1・4/1ともにデータが無いため、その月で最初に実データがある日に
+    # スナップされる
+    assert result == [pd.Timestamp("2026-03-03"), pd.Timestamp("2026-04-02")]
+
+
+def test_compute_month_start_dates_returns_empty_list_for_empty_df():
+    df = pd.DataFrame({"date": pd.to_datetime([])})
+
+    assert _compute_month_start_dates(df) == []
