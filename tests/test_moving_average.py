@@ -64,6 +64,23 @@ def test_sma20_matches_manual_average():
     assert result["sma20"].iloc[-1] == sum(range(1, 21)) / 20
 
 
+def test_sma50_matches_manual_average():
+    df = _price_series(51)
+
+    result = calculate_moving_average(df)
+
+    # close = [1..51] -> 直近50件の平均
+    assert result["sma50"].iloc[-1] == sum(range(2, 52)) / 50
+
+
+def test_sma50_is_nan_when_not_enough_history():
+    df = _price_series(10)
+
+    result = calculate_moving_average(df)
+
+    assert result["sma50"].isna().all()
+
+
 def test_sma60_is_nan_when_not_enough_history():
     df = _price_series(10)
 

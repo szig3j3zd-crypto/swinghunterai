@@ -58,6 +58,12 @@ def calculate_moving_average(df):
         .mean()
     )
 
+    df["sma50"] = (
+        df["close"]
+        .rolling(window=50)
+        .mean()
+    )
+
     df["sma60"] = (
         df["close"]
         .rolling(window=60)

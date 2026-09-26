@@ -687,15 +687,20 @@ def _style_delete_buttons_red():
 # st.checkbox側のkeyに紐づくセッション状態はStreamlitによって破棄される
 # （非表示のウィジェットの状態はrunをまたいで残らない仕様のため）。
 # そのため、ウィジェット自身のkeyには頼らず、ここで管理する独立した
-# session_stateの値を毎回value=に渡して手動で維持する
+# session_stateの値を毎回value=に渡して手動で維持する。
+# 移動平均線の既定表示は5・10・20・50・100日線（2026-09-26改訂。「移動平均線に
+# MA50を追加して。移動平均線のデフォルトは5，10，20，50，100にして」との
+# 要望のため。10日線をFalse→True、60日線をTrue→Falseに変更し、50日線を
+# 新規追加した）
 CHART_DISPLAY_PREF_DEFAULTS = {
     "chart_pref_show_candlestick": True,
     "chart_pref_show_sma3": False,
     "chart_pref_show_sma5": True,
     "chart_pref_show_sma7": False,
-    "chart_pref_show_sma10": False,
+    "chart_pref_show_sma10": True,
     "chart_pref_show_sma20": True,
-    "chart_pref_show_sma60": True,
+    "chart_pref_show_sma50": True,
+    "chart_pref_show_sma60": False,
     "chart_pref_show_sma100": True,
     "chart_pref_show_volume": True,
     "chart_pref_show_hover_info": True,
@@ -922,16 +927,16 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
 
     # vertical_alignment="bottom"で、ラベル行が無いチェックボックスを
     # チェックボックス自体の高さに揃える。列幅比率は各チェックボックスの
-    # ラベル文字数に応じて調整する。"10日線"・"20日線"・"60日線"（数字2桁）・
-    # "出来高"（漢字3文字）は"3日線"等（数字1桁）より横幅が必要で、
-    # 同じ比率のままだと折り返してラベルが2行になってしまうため、
+    # ラベル文字数に応じて調整する。"10日線"・"20日線"・"50日線"・"60日線"
+    # （数字2桁）・"出来高"（漢字3文字）は"3日線"等（数字1桁）より横幅が
+    # 必要で、同じ比率のままだと折り返してラベルが2行になってしまうため、
     # 他より広めの比率を割り当てる。"100日線"（数字3桁）はさらに幅が必要
     (
         cb_candle, cb_sma3, cb_sma5, cb_sma7, cb_sma10,
-        cb_sma20, cb_sma60, cb_sma100, cb_volume, cb_hover, _cb_spacer,
+        cb_sma20, cb_sma50, cb_sma60, cb_sma100, cb_volume, cb_hover, _cb_spacer,
     ) = (
         st.columns(
-            [1.4, 0.9, 0.9, 0.9, 1.2, 1.2, 1.2, 1.4, 1.1, 1.3, 2.5],
+            [1.4, 0.9, 0.9, 0.9, 1.2, 1.2, 1.2, 1.2, 1.4, 1.1, 1.3, 2.5],
             gap="xxsmall", vertical_alignment="bottom",
         )
     )
@@ -949,6 +954,8 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         show_sma10 = _persistent_checkbox("10日線", "chart_pref_show_sma10", key_prefix)
     with cb_sma20:
         show_sma20 = _persistent_checkbox("20日線", "chart_pref_show_sma20", key_prefix)
+    with cb_sma50:
+        show_sma50 = _persistent_checkbox("50日線", "chart_pref_show_sma50", key_prefix)
     with cb_sma60:
         show_sma60 = _persistent_checkbox("60日線", "chart_pref_show_sma60", key_prefix)
     with cb_sma100:
@@ -983,6 +990,7 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             ("sma7", show_sma7),
             ("sma10", show_sma10),
             ("sma20", show_sma20),
+            ("sma50", show_sma50),
             ("sma60", show_sma60),
             ("sma100", show_sma100),
         ]

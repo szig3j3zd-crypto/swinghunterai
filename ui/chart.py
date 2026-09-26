@@ -19,6 +19,7 @@ MA_COLORS = {
     "sma7": "#ff69b4",
     "sma10": "#9467bd",
     "sma20": "#d62728",
+    "sma50": "#ff7f0e",
     "sma60": "#1f5fa8",
     "sma100": "#8c564b",
 }
@@ -28,6 +29,7 @@ MA_LABELS = {
     "sma7": "7日線",
     "sma10": "10日線",
     "sma20": "20日線",
+    "sma50": "50日線",
     "sma60": "60日線",
     "sma100": "100日線",
 }
@@ -273,14 +275,14 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
     ----------
     df
         date, open, high, low, close, volume, sma3, sma5, sma7, sma10, sma20,
-        sma60, sma100 列を持つDataFrame
+        sma50, sma60, sma100 列を持つDataFrame
 
     show_candlestick
         ローソク足を表示するか
 
     visible_ma
         表示する移動平均線のキー（"sma3", "sma5", "sma7", "sma10", "sma20",
-        "sma60", "sma100"）のタプル/リスト
+        "sma50", "sma60", "sma100"）のタプル/リスト
 
     show_volume
         出来高サブプロットを表示するか

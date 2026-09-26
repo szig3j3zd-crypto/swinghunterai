@@ -397,7 +397,7 @@ def get_stock_chart_data(code, timeframe="daily"):
     -------
     df
         date, open, high, low, close, volume, sma3, sma5, sma7, sma10,
-        sma20, sma60, sma100 列を持つDataFrame（日付順ソート済み）
+        sma20, sma50, sma60, sma100 列を持つDataFrame（日付順ソート済み）
     """
 
     df = get_stock_data(code)
