@@ -2748,9 +2748,33 @@ def _render_practice_chart_section():
 
         st.divider()
 
-        current_price = float(
-            _get_cached_chart_data(practice_code, timeframe).iloc[-1]["close"]
-        )
+        # 「買値」の初期値は、チャートで検索中の日付（chart_reference_date）
+        # の終値にする（2026-09-30改訂。以前は常に最新日の終値だったため、
+        # 過去の日付を検索してチャートを見ても買値欄は最新日の価格のまま
+        # ズレており、「チャートにカーソルを合わせて株価を確認してから
+        # 買値欄に手入力する」手間が必要だった。取引日欄は既にこの日付を
+        # デフォルトにしているため、買値欄も揃えることで、日付を検索した
+        # 時点でその日の終値が自動で入り、通常は転記の手間が無くなる）。
+        # 検索日に実データが無い日（土日等）が指定された場合は、その日
+        # 以前で最も新しい実データの日を使う（チャート表示位置の決定
+        # （target_end_index、4.2節）と同じsearchsortedのロジック）。
+        # 日付未検索（chart_reference_date=None）なら、従来通り最新日の終値
+        practice_chart_df = _get_cached_chart_data(practice_code, timeframe)
+        if chart_reference_date is not None:
+            reference_index = (
+                practice_chart_df["date"].searchsorted(
+                    pd.Timestamp(chart_reference_date), side="right"
+                )
+                - 1
+            )
+            reference_index = min(
+                max(int(reference_index), 0), len(practice_chart_df) - 1
+            )
+            current_price = float(
+                practice_chart_df.iloc[reference_index]["close"]
+            )
+        else:
+            current_price = float(practice_chart_df.iloc[-1]["close"])
 
         st.markdown("##### 練習の売買記録を追加")
 
@@ -2772,7 +2796,9 @@ def _render_practice_chart_section():
                 "取引日", value=practice_date_default
             )
             practice_entry_price_input = st.number_input(
-                "買値", min_value=0.0, value=current_price
+                "買値", min_value=0.0, value=current_price,
+                help="取引日の終値を自動で入力しています。始値・高値・安値"
+                "など別の価格で記録したい場合は書き換えてください。",
             )
             practice_quantity_input = st.number_input(
                 "株数", min_value=1, value=100, step=100
