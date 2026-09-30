@@ -1516,14 +1516,28 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
                 );
             }}
 
+            // 対象は「マウスが乗っているチャート」として追跡している
+            // __swingHunterActiveChart単体ではなく、その時点で存在する
+            // 全ての.js-plotly-plotにする（2026-09-30修正。「チャート画面外を
+            // タップやクリックしたら消えるはずが機能していない」との報告を
+            // 受けて調査した結果、__swingHunterActiveChartはmouseenterでしか
+            // 更新されないため、チャートdivがStreamlitに作り直された直後
+            // （ポーリングでの再setup()が間に合うまでの間）は破棄済みの古い
+            // divを指したままになりうる。その状態でPlotly.Fx.unhover()を
+            // 呼んでも、古い（既にDOMから外れた）divに対しては何も起きず、
+            // 実際に表示されている新しいチャートのホバーは消えなかった。
+            // クリックのたびに実在する全チャートdivを都度取得して対象にすれば、
+            // この参照の取り違え・古さに関係なく常に正しく消える
             const unhoverClickHandler = function(e) {{
-                const target = window.parent.__swingHunterActiveChart;
-                if (!target || !window.parent.Plotly || !window.parent.Plotly.Fx) {{
-                    return;
-                }}
-                if (target.contains(e.target)) return;
+                if (!window.parent.Plotly || !window.parent.Plotly.Fx) return;
 
-                window.parent.Plotly.Fx.unhover(target);
+                const plots = window.parent.document.querySelectorAll(
+                    ".js-plotly-plot"
+                );
+                plots.forEach(function(plot) {{
+                    if (plot.contains(e.target)) return;
+                    window.parent.Plotly.Fx.unhover(plot);
+                }});
             }};
             window.parent.__swingHunterUnhoverClickHandler = unhoverClickHandler;
             window.parent.document.addEventListener("click", unhoverClickHandler, true);
