@@ -2778,22 +2778,29 @@ def _render_practice_chart_section():
 
         st.markdown("##### 練習の売買記録を追加")
 
+        # 取引日は独立した入力欄を持たず、チャートの「年月日で検索」欄と
+        # 統合する（2026-09-30改訂。「売買記録の追加にある取引日を検索と
+        # 統合したい」との要望のため。以前は「年月日で検索」と「取引日」が
+        # 別々のst.date_inputで、値も独立していた（取引日側は検索日を
+        # 初期値にするだけで、後から検索日だけ変えても追随しなかった）。
+        # 買値の既定値も既にこの同じ日付（chart_reference_date）の終値に
+        # 連動させているため、検索日を1つに統合することで「チャートを
+        # 見たい日に合わせる」操作だけで買値・取引日の両方が揃う。
+        # 「次回アプリを開いたときに検索した日付からチャートを確認できる」
+        # 機能（practice_settings.last_search_date）はchart_reference_date
+        # 自体の永続化の仕組みなので、そのまま維持される
+        practice_trade_date = chart_reference_date or date.today()
+        st.caption(
+            f"取引日: {practice_trade_date.strftime('%Y/%m/%d')}"
+            "（上のチャートの「年月日で検索」欄で変更できます）"
+        )
+
         with st.form("add_practice_trade_form"):
             practice_direction_input = st.radio(
                 "方向",
                 options=["long", "short"],
                 format_func=lambda d: DIRECTION_LABELS[d],
                 horizontal=True,
-            )
-            # カレンダーを開いたときに表示する年月を、今チャートで見ている
-            # 日付（年月日検索の指定日、未指定なら最新日）に合わせる
-            # （2026-09-13追加。「取引日はカレンダーを開いたときに見ている
-            # チャートの年、月に自動で合わせるように」との要望のため。
-            # value=に渡した日付を含む月がカレンダーの初期表示月になる、
-            # st.date_inputの標準動作を利用している）
-            practice_date_default = chart_reference_date or date.today()
-            practice_trade_date_input = st.date_input(
-                "取引日", value=practice_date_default
             )
             practice_entry_price_input = st.number_input(
                 "買値", min_value=0.0, value=current_price,
@@ -2814,7 +2821,7 @@ def _render_practice_chart_section():
                     code=practice_code,
                     company_name=practice_company_name,
                     direction=practice_direction_input,
-                    trade_date=str(practice_trade_date_input),
+                    trade_date=str(practice_trade_date),
                     entry_price=practice_entry_price_input,
                     exit_price=None,
                     quantity=int(practice_quantity_input),
