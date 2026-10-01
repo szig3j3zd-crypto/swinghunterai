@@ -212,6 +212,26 @@ def _period_label_covering_date(latest_date, target_date):
     return CHART_PERIOD_OPTIONS[-1]
 
 
+def _close_price_on_or_before(chart_df, target_date):
+
+    """
+    chart_df内で、target_date以前で最も新しい実データの日の終値を返す
+    （2026-09-30追加、2026-10-01に共通ヘルパーとして切り出し）。
+    target_dateが土日・祝日などデータの無い日の場合は、その前の最も
+    新しい実データの日にフォールバックする。練習チャートタブの「買値」
+    既定値・「この日で決済」ボタン（8章）の両方で使う、同じロジック
+    （チャート表示位置の決定（target_end_index、4.2節）とも同じ考え方）
+    """
+
+    reference_index = (
+        chart_df["date"].searchsorted(pd.Timestamp(target_date), side="right")
+        - 1
+    )
+    reference_index = min(max(int(reference_index), 0), len(chart_df) - 1)
+
+    return float(chart_df.iloc[reference_index]["close"])
+
+
 # _width_label_to_bar_count()で表示幅ラベルを暦日数に変換する際の基準日。
 # DateOffsetの加算結果（月内日数の違い等）が呼び出しのたびにブレないよう
 # 固定の日付を使う（本数はあくまで時間足間の比較用の概算値のため、
@@ -904,25 +924,40 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             st.session_state[date_widget_key]
         )
 
-    date_col, date_reset_col, _date_spacer = st.columns(
-        [1.6, 1, 4.7], gap="xxsmall", vertical_alignment="bottom"
-    )
-    with date_reset_col:
-        if st.button("最新へ", key=f"chart_date_search_reset_{key_prefix}"):
-            st.session_state[date_widget_key] = default_search_date
-            st.session_state[date_pref_key] = default_search_date
-    with date_col:
-        search_date = st.date_input(
-            "年月日で検索",
-            value=_clamp_search_date(
-                st.session_state.get(date_pref_key, default_search_date)
-            ),
-            min_value=period_start_date,
-            max_value=default_search_date,
-            key=date_widget_key,
-            help="指定した日付をチャートの一番右（最新側）にして表示します。"
-            "選べるのは表示期間の範囲内のみです。",
+    # 練習チャートタブでは、この欄（ウィジェット自体）をここでは描画しない
+    # （2026-10-01改訂。「年月日で検索を、売買記録を追加の買値の上に移動
+    # して」との要望のため。ウィジェットの実体は_render_practice_chart_
+    # section側（「練習の売買記録を追加」の「方向」の直後・「買値」の
+    # 直前）に移し、同じwidget key（date_widget_key）で描画する。
+    # ここではチャート位置計算（下のtarget_end_index等）に使うsearch_date
+    # の値だけ、session_stateから読んで解決する。st.formの中では
+    # ウィジェットの変更が送信ボタンを押すまでチャートに反映されない
+    # （フォームは送信時に値をまとめて渡す仕組みのため）ため、フォームの
+    # 外（「方向」と「買値」の間）に置いている）
+    if key_prefix == "practice":
+        search_date = _clamp_search_date(
+            st.session_state.get(date_pref_key, default_search_date)
         )
+    else:
+        date_col, date_reset_col, _date_spacer = st.columns(
+            [1.6, 1, 4.7], gap="xxsmall", vertical_alignment="bottom"
+        )
+        with date_reset_col:
+            if st.button("最新へ", key=f"chart_date_search_reset_{key_prefix}"):
+                st.session_state[date_widget_key] = default_search_date
+                st.session_state[date_pref_key] = default_search_date
+        with date_col:
+            search_date = st.date_input(
+                "年月日で検索",
+                value=_clamp_search_date(
+                    st.session_state.get(date_pref_key, default_search_date)
+                ),
+                min_value=period_start_date,
+                max_value=default_search_date,
+                key=date_widget_key,
+                help="指定した日付をチャートの一番右（最新側）にして表示"
+                "します。選べるのは表示期間の範囲内のみです。",
+            )
     st.session_state[date_pref_key] = search_date
 
     # vertical_alignment="bottom"で、ラベル行が無いチェックボックスを
@@ -2260,7 +2295,7 @@ def _group_practice_trades_by_year_month(closed_trades):
     return groups
 
 
-def _render_practice_trade_table(trades):
+def _render_practice_trade_table(trades, chart_reference_date, timeframe):
 
     """
     練習の売買記録を1つのdata_editorで表示・編集する
@@ -2303,6 +2338,20 @@ def _render_practice_trade_table(trades):
     確認（`practice_trade_confirm_delete_all`セッション状態）を挟む。
     記録自体は明示的に削除しない限りDBに残り続ける（他の永続データ同様、
     アプリの再起動・再実行では消えない）
+
+    選択中の1件だけ「この日で決済」ボタンで、その記録の売却日・売値を
+    チャートの「取引日」欄（検索中の日付。4.2節、このタブではラベルを
+    「取引日」に変更済み）とその日の終値に一括で埋められる（2026-10-01
+    追加。「検索日を取引日に変更して。売却日と売値も同じようにできない？」
+    との要望のため。買値が取引日欄の日付の終値に自動で合うのと対になる
+    形で、売却日・売値は追加フォームには置かず、既存のチェックボックス
+    選択＋一覧表のセル直接編集という作りはそのままに、ボタン一発で
+    「今チャートで見ている日に決済する」操作だけ追加した。選択中の記録の
+    銘柄コードで株価を取得する（表示中のチャートの銘柄とは限らないため。
+    記録を選択すると売却日＝その記録自身の銘柄にチャートをジャンプさせる
+    仕組みがあるが、その後に検索欄を別の銘柄へ手動で変えても選択状態は
+    残るため、必ず選択中の記録自身の銘柄で計算する）。売却日が取引日より
+    前になる場合は保存せず、st.errorで知らせる（セル直接編集時と同じ制約）
 
     方向・取引日・買値・売値・売却日・株数はすべて表内で直接編集できる
     （2026-09-16改訂。一時期は取引日・売却日を専用のst.date_input編集欄に
@@ -2509,10 +2558,45 @@ def _render_practice_trade_table(trades):
                 )
 
     if current_selected_id is not None and current_selected_id in trade_ids:
-        if st.button("選択した記録を削除", key="delete_practice_trade_button"):
-            delete_practice_trade(current_selected_id)
-            st.session_state["practice_trade_selected_id"] = None
-            st.rerun()
+        selected_trade = next(t for t in trades if t["id"] == current_selected_id)
+        settle_date = chart_reference_date or date.today()
+
+        with st.container(horizontal=True, gap="small"):
+            if st.button(
+                f"この日（{settle_date.strftime('%Y/%m/%d')}）で決済",
+                key="settle_practice_trade_at_search_date_button",
+                help="選択中の記録の売却日・売値を、チャートの「取引日」欄"
+                "で検索中の日付とその日の終値にします。",
+            ):
+                if str(settle_date) < selected_trade["trade_date"]:
+                    st.error(
+                        f"{selected_trade['code']} "
+                        f"{selected_trade['company_name']}: "
+                        "売却日は取引日より前の日付にはできません。変更は"
+                        "保存されませんでした。"
+                    )
+                else:
+                    settle_chart_df = _get_cached_chart_data(
+                        selected_trade["code"], timeframe
+                    )
+                    settle_price = _close_price_on_or_before(
+                        settle_chart_df, settle_date
+                    )
+                    update_practice_trade(
+                        selected_trade["id"],
+                        direction=selected_trade["direction"],
+                        trade_date=selected_trade["trade_date"],
+                        entry_price=selected_trade["entry_price"],
+                        exit_price=settle_price,
+                        quantity=selected_trade["quantity"],
+                        exit_date=str(settle_date),
+                    )
+                    st.rerun()
+
+            if st.button("選択した記録を削除", key="delete_practice_trade_button"):
+                delete_practice_trade(current_selected_id)
+                st.session_state["practice_trade_selected_id"] = None
+                st.rerun()
         _style_delete_buttons_red()
 
     st.divider()
@@ -2547,6 +2631,79 @@ def _render_practice_trade_table(trades):
             st.session_state["practice_trade_confirm_delete_all"] = True
             st.rerun()
         _style_delete_buttons_red()
+
+
+def _render_practice_trade_date_widget(last_date, period_label):
+
+    """
+    練習チャートタブの「取引日」欄（st.date_input）と「最新へ」ボタンを
+    描画し、選択中の日付（date型）を返す（2026-10-01追加。「年月日で検索を
+    売買記録を追加の買値の上に移動して」との要望のため。元は
+    `_render_chart_block`内（表示期間・表示幅の直下）にあった欄を、
+    「練習の売買記録を追加」の「方向」の直後・「買値」の直前に移した。
+
+    `st.form`の中に置くとウィジェットの変更が送信ボタンを押すまで
+    チャートに反映されない（フォームは送信時に値をまとめて渡す仕組みの
+    ため）ため、チャートの即時追随を保つにはフォームの外に置く必要が
+    あり、結果として「方向」もフォーム外に出すことになった（方向は元々
+    送信時に読むだけの値で、フォーム外に出しても動作は変わらない）
+
+    widget key（`chart_date_search_input_practice`）・pref key
+    （`chart_date_search_pref_practice`）は、移設前に`_render_chart_block`
+    （4.2節）が使っていたものをそのまま引き継ぐ。表示期間・最新日が
+    変わっても検索日の制約（period_start_date〜default_search_date）が
+    壊れないよう、`_render_chart_block`内の同名ロジックと全く同じ計算を
+    行う
+
+    Parameters
+    ----------
+    last_date
+        銘柄の最新データ日（pandas.Timestamp）
+    period_label
+        現在の表示期間ラベル（`chart_period_pref_practice`）
+
+    Returns
+    -------
+    search_date
+        選択中の日付（datetime.date）
+    """
+
+    date_pref_key = "chart_date_search_pref_practice"
+    date_widget_key = "chart_date_search_input_practice"
+    default_search_date = last_date.date()
+    period_start_date = (last_date - _period_label_to_offset(period_label)).date()
+
+    def _clamp_search_date(value):
+        return min(max(value, period_start_date), default_search_date)
+
+    if date_widget_key in st.session_state:
+        st.session_state[date_widget_key] = _clamp_search_date(
+            st.session_state[date_widget_key]
+        )
+
+    date_col, date_reset_col, _date_spacer = st.columns(
+        [1.6, 1, 4.7], gap="xxsmall", vertical_alignment="bottom"
+    )
+    with date_reset_col:
+        if st.button("最新へ", key="chart_date_search_reset_practice"):
+            st.session_state[date_widget_key] = default_search_date
+            st.session_state[date_pref_key] = default_search_date
+    with date_col:
+        search_date = st.date_input(
+            "取引日",
+            value=_clamp_search_date(
+                st.session_state.get(date_pref_key, default_search_date)
+            ),
+            min_value=period_start_date,
+            max_value=default_search_date,
+            key=date_widget_key,
+            help="指定した日付をチャートの一番右（最新側）にして表示します。"
+            "練習の売買記録を追加する際の取引日・買値（その日の終値）にも"
+            "使われます。選べるのは表示期間の範囲内のみです。",
+        )
+    st.session_state[date_pref_key] = search_date
+
+    return search_date
 
 
 def _render_practice_chart_section():
@@ -2748,62 +2905,74 @@ def _render_practice_chart_section():
 
         st.divider()
 
-        # 「買値」の初期値は、チャートで検索中の日付（chart_reference_date）
-        # の終値にする（2026-09-30改訂。以前は常に最新日の終値だったため、
-        # 過去の日付を検索してチャートを見ても買値欄は最新日の価格のまま
-        # ズレており、「チャートにカーソルを合わせて株価を確認してから
-        # 買値欄に手入力する」手間が必要だった。取引日欄は既にこの日付を
-        # デフォルトにしているため、買値欄も揃えることで、日付を検索した
-        # 時点でその日の終値が自動で入り、通常は転記の手間が無くなる）。
-        # 検索日に実データが無い日（土日等）が指定された場合は、その日
-        # 以前で最も新しい実データの日を使う（チャート表示位置の決定
-        # （target_end_index、4.2節）と同じsearchsortedのロジック）。
-        # 日付未検索（chart_reference_date=None）なら、従来通り最新日の終値
         practice_chart_df = _get_cached_chart_data(practice_code, timeframe)
-        if chart_reference_date is not None:
-            reference_index = (
-                practice_chart_df["date"].searchsorted(
-                    pd.Timestamp(chart_reference_date), side="right"
-                )
-                - 1
-            )
-            reference_index = min(
-                max(int(reference_index), 0), len(practice_chart_df) - 1
-            )
-            current_price = float(
-                practice_chart_df.iloc[reference_index]["close"]
-            )
-        else:
-            current_price = float(practice_chart_df.iloc[-1]["close"])
 
         st.markdown("##### 練習の売買記録を追加")
 
-        # 取引日は独立した入力欄を持たず、チャートの「年月日で検索」欄と
-        # 統合する（2026-09-30改訂。「売買記録の追加にある取引日を検索と
-        # 統合したい」との要望のため。以前は「年月日で検索」と「取引日」が
-        # 別々のst.date_inputで、値も独立していた（取引日側は検索日を
-        # 初期値にするだけで、後から検索日だけ変えても追随しなかった）。
-        # 買値の既定値も既にこの同じ日付（chart_reference_date）の終値に
-        # 連動させているため、検索日を1つに統合することで「チャートを
-        # 見たい日に合わせる」操作だけで買値・取引日の両方が揃う。
-        # 「次回アプリを開いたときに検索した日付からチャートを確認できる」
-        # 機能（practice_settings.last_search_date）はchart_reference_date
-        # 自体の永続化の仕組みなので、そのまま維持される
-        practice_trade_date = chart_reference_date or date.today()
-        st.caption(
-            f"取引日: {practice_trade_date.strftime('%Y/%m/%d')}"
-            "（上のチャートの「年月日で検索」欄で変更できます）"
+        # 方向は元はフォーム内にあったが、下の「取引日」欄をフォームの
+        # 外に出した関係で、同じ並び順（方向→取引日→買値→株数）を保つため
+        # フォームの外に出した（2026-10-01改訂。方向はもともと送信時に
+        # 読むだけの値のため、フォーム外に出しても動作は変わらない）
+        practice_direction_input = st.radio(
+            "方向",
+            options=["long", "short"],
+            format_func=lambda d: DIRECTION_LABELS[d],
+            horizontal=True,
         )
 
+        # 「取引日」欄は、チャートの表示期間・表示幅の直下にあった
+        # 「年月日で検索」欄（4.2節）をそのままここへ移設したもの
+        # （2026-10-01改訂。「年月日で検索を、売買記録を追加の買値の上に
+        # 移動して」との要望のため。widget key・pref keyは移設前と同じ
+        # （`chart_date_search_input_practice`/`chart_date_search_pref_
+        # practice`）ものを使うため、「次回アプリを開いたときに検索した
+        # 日付からチャートを確認できる」永続化機能（practice_settings.
+        # last_search_date）はそのまま維持される。st.formの外に置くのは、
+        # フォーム内のウィジェットは送信ボタンを押すまで変更が反映されず、
+        # チャートの即時追随ができなくなるため）
+        chart_reference_date = _render_practice_trade_date_widget(
+            practice_chart_df["date"].max(), current_period_label
+        )
+        practice_trade_date = chart_reference_date or date.today()
+
+        # 「買値」の初期値は、取引日（直上の「取引日」欄で検索中の日付）の
+        # 終値にする（2026-09-30改訂。以前は常に最新日の終値だったため、
+        # 過去の日付を検索してチャートを見ても買値欄は最新日の価格のまま
+        # ズレており、「チャートにカーソルを合わせて株価を確認してから
+        # 買値欄に手入力する」手間が必要だった。取引日と同じ日付の終値を
+        # 自動入力することで、日付を検索した時点でその日の終値がそのまま
+        # 入り、通常は転記の手間が無くなる）
+        current_price = _close_price_on_or_before(
+            practice_chart_df, practice_trade_date
+        )
+
+        # 「買値」欄のwidget keyに取引日を含めてvalue=の変更を効かせる
+        # 方式（keyを変えれば毎回新しいウィジェット扱いになり、新しい
+        # value=が採用されるはず）は、st.form内では確定済みの状態が
+        # 残ってしまうことがあり、高い頻度（実測約4分の1）で古い買値の
+        # まま更新されない再現性のある不具合があった（2026-10-01発見。
+        # 原因はSteamlit側のフォーム内ウィジェットの状態保持の挙動と
+        # 推測されるが詳細未特定）。より確実な「最新へ」ボタン等と同じ
+        # 方式（widgetが生成される前にsession_stateへ直接書き込む）に
+        # 変更したが、それだけでもまだ同程度の頻度で古い値のままになる
+        # ことがあった（取引日欄の変更と買値欄の更新が同じ1回のrun内で
+        # 連鎖する作りのため、何らかのタイミング要因で買値欄の表示が
+        # 直前の状態を拾ってしまうと推測される）。session_stateを書き換えた
+        # 直後にst.rerun()で必ずもう1回runをやり直すようにし、買値欄が
+        # 「既に書き換わったsession_state」だけを材料にした、まっさらな
+        # runで描画されることを保証する（実測で不具合が再現しなくなった）
+        practice_price_widget_key = "practice_entry_price_input"
+        practice_price_basis_key = "practice_entry_price_basis"
+        practice_price_basis = (practice_code, str(practice_trade_date))
+        if st.session_state.get(practice_price_basis_key) != practice_price_basis:
+            st.session_state[practice_price_widget_key] = current_price
+            st.session_state[practice_price_basis_key] = practice_price_basis
+            st.rerun()
+
         with st.form("add_practice_trade_form"):
-            practice_direction_input = st.radio(
-                "方向",
-                options=["long", "short"],
-                format_func=lambda d: DIRECTION_LABELS[d],
-                horizontal=True,
-            )
             practice_entry_price_input = st.number_input(
-                "買値", min_value=0.0, value=current_price,
+                "買値", min_value=0.0,
+                key=practice_price_widget_key,
                 help="取引日の終値を自動で入力しています。始値・高値・安値"
                 "など別の価格で記録したい場合は書き換えてください。",
             )
@@ -2837,7 +3006,15 @@ def _render_practice_chart_section():
     st.divider()
     st.markdown("##### 練習の売買記録一覧")
 
-    _render_practice_trade_table(practice_trades)
+    # 銘柄未選択（チャート非表示）のrunでもchart_reference_dateを渡せる
+    # よう、上のif practice_code:ブロック内の値に頼らずsession_stateから
+    # 直接読み直す（同じキーを参照しており、値は同じになる）
+    current_chart_reference_date = st.session_state.get(
+        "chart_date_search_pref_practice"
+    )
+    _render_practice_trade_table(
+        practice_trades, current_chart_reference_date, timeframe
+    )
 
 
 with tab_trades:
