@@ -2295,7 +2295,7 @@ def _group_practice_trades_by_year_month(closed_trades):
     return groups
 
 
-def _render_practice_trade_table(trades, chart_reference_date, timeframe):
+def _render_practice_trade_table(trades, timeframe):
 
     """
     練習の売買記録を1つのdata_editorで表示・編集する
@@ -2339,19 +2339,24 @@ def _render_practice_trade_table(trades, chart_reference_date, timeframe):
     記録自体は明示的に削除しない限りDBに残り続ける（他の永続データ同様、
     アプリの再起動・再実行では消えない）
 
-    選択中の1件だけ「この日で決済」ボタンで、その記録の売却日・売値を
-    チャートの「取引日」欄（検索中の日付。4.2節、このタブではラベルを
-    「取引日」に変更済み）とその日の終値に一括で埋められる（2026-10-01
-    追加。「検索日を取引日に変更して。売却日と売値も同じようにできない？」
-    との要望のため。買値が取引日欄の日付の終値に自動で合うのと対になる
-    形で、売却日・売値は追加フォームには置かず、既存のチェックボックス
-    選択＋一覧表のセル直接編集という作りはそのままに、ボタン一発で
-    「今チャートで見ている日に決済する」操作だけ追加した。選択中の記録の
-    銘柄コードで株価を取得する（表示中のチャートの銘柄とは限らないため。
-    記録を選択すると売却日＝その記録自身の銘柄にチャートをジャンプさせる
-    仕組みがあるが、その後に検索欄を別の銘柄へ手動で変えても選択状態は
-    残るため、必ず選択中の記録自身の銘柄で計算する）。売却日が取引日より
-    前になる場合は保存せず、st.errorで知らせる（セル直接編集時と同じ制約）
+    選択中の1件だけ、チャートの「取引日」欄（検索中の日付。4.2節、
+    このタブではラベルを「取引日」に変更済み）とその日の終値に、その
+    記録の売却日・売値を一括で埋める「この日で決済」ボタンがある
+    （2026-10-01追加。「検索日を取引日に変更して。売却日と売値も同じ
+    ようにできない？」との要望のため。買値が取引日欄の日付の終値に
+    自動で合うのと対になる形で、売却日・売値は追加フォームには置かず、
+    既存のチェックボックス選択＋一覧表のセル直接編集という作りはそのままに、
+    ボタン一発で「今チャートで見ている日に決済する」操作だけ追加した）。
+    ボタン自体は「練習の売買記録を追加」フォーム内・「買値」の直後に
+    ある（8章。2026-10-03改訂。「この日で決済の項目を買値の項目の下に
+    移動して」との要望のため。元はこの一覧表の直後（「選択した記録を
+    削除」ボタンの隣）にあった。この一覧表側では「選択した記録を削除」
+    ボタンだけが残る）。選択中の記録の銘柄コードで株価を取得する
+    （表示中のチャートの銘柄とは限らないため。記録を選択すると売却日＝
+    その記録自身の銘柄にチャートをジャンプさせる仕組みがあるが、その後に
+    検索欄を別の銘柄へ手動で変えても選択状態は残るため、必ず選択中の
+    記録自身の銘柄で計算する）。売却日が取引日より前になる場合は保存せず、
+    st.errorで知らせる（セル直接編集時と同じ制約）
 
     方向・取引日・買値・売値・売却日・株数はすべて表内で直接編集できる
     （2026-09-16改訂。一時期は取引日・売却日を専用のst.date_input編集欄に
@@ -2558,45 +2563,10 @@ def _render_practice_trade_table(trades, chart_reference_date, timeframe):
                 )
 
     if current_selected_id is not None and current_selected_id in trade_ids:
-        selected_trade = next(t for t in trades if t["id"] == current_selected_id)
-        settle_date = chart_reference_date or date.today()
-
-        with st.container(horizontal=True, gap="small"):
-            if st.button(
-                f"この日（{settle_date.strftime('%Y/%m/%d')}）で決済",
-                key="settle_practice_trade_at_search_date_button",
-                help="選択中の記録の売却日・売値を、チャートの「取引日」欄"
-                "で検索中の日付とその日の終値にします。",
-            ):
-                if str(settle_date) < selected_trade["trade_date"]:
-                    st.error(
-                        f"{selected_trade['code']} "
-                        f"{selected_trade['company_name']}: "
-                        "売却日は取引日より前の日付にはできません。変更は"
-                        "保存されませんでした。"
-                    )
-                else:
-                    settle_chart_df = _get_cached_chart_data(
-                        selected_trade["code"], timeframe
-                    )
-                    settle_price = _close_price_on_or_before(
-                        settle_chart_df, settle_date
-                    )
-                    update_practice_trade(
-                        selected_trade["id"],
-                        direction=selected_trade["direction"],
-                        trade_date=selected_trade["trade_date"],
-                        entry_price=selected_trade["entry_price"],
-                        exit_price=settle_price,
-                        quantity=selected_trade["quantity"],
-                        exit_date=str(settle_date),
-                    )
-                    st.rerun()
-
-            if st.button("選択した記録を削除", key="delete_practice_trade_button"):
-                delete_practice_trade(current_selected_id)
-                st.session_state["practice_trade_selected_id"] = None
-                st.rerun()
+        if st.button("選択した記録を削除", key="delete_practice_trade_button"):
+            delete_practice_trade(current_selected_id)
+            st.session_state["practice_trade_selected_id"] = None
+            st.rerun()
         _style_delete_buttons_red()
 
     st.divider()
@@ -2976,6 +2946,59 @@ def _render_practice_chart_section():
                 help="取引日の終値を自動で入力しています。始値・高値・安値"
                 "など別の価格で記録したい場合は書き換えてください。",
             )
+
+            # 売買記録一覧（8章、_render_practice_trade_table）でチェック
+            # して選択中の記録を、直上の「買値」と同じ日付・終値のロジックで
+            # 決済する（2026-10-01追加、2026-10-03改訂で本欄（「買値」の
+            # 直後）へ移動。元は一覧表の直後（「選択した記録を削除」ボタンの
+            # 隣）にあった。「この日で決済の項目を買値の項目の下に移動して」
+            # との要望のため。st.form内のためst.form_submit_buttonを使う
+            # （st.buttonはフォーム内では使えない）。選択中の記録が無い
+            # ときは表示しない
+            practice_selected_trade_id = st.session_state.get(
+                "practice_trade_selected_id"
+            )
+            practice_selected_trade = next(
+                (
+                    t for t in practice_trades
+                    if t["id"] == practice_selected_trade_id
+                ),
+                None,
+            )
+            if practice_selected_trade is not None:
+                if st.form_submit_button(
+                    f"この日（{practice_trade_date.strftime('%Y/%m/%d')}）"
+                    "で決済",
+                    help="選択中の記録の売却日・売値を、上の「取引日」欄で"
+                    "検索中の日付とその日の終値にします。",
+                ):
+                    if str(practice_trade_date) < practice_selected_trade[
+                        "trade_date"
+                    ]:
+                        st.error(
+                            f"{practice_selected_trade['code']} "
+                            f"{practice_selected_trade['company_name']}: "
+                            "売却日は取引日より前の日付にはできません。"
+                            "変更は保存されませんでした。"
+                        )
+                    else:
+                        settle_chart_df = _get_cached_chart_data(
+                            practice_selected_trade["code"], timeframe
+                        )
+                        settle_price = _close_price_on_or_before(
+                            settle_chart_df, practice_trade_date
+                        )
+                        update_practice_trade(
+                            practice_selected_trade["id"],
+                            direction=practice_selected_trade["direction"],
+                            trade_date=practice_selected_trade["trade_date"],
+                            entry_price=practice_selected_trade["entry_price"],
+                            exit_price=settle_price,
+                            quantity=practice_selected_trade["quantity"],
+                            exit_date=str(practice_trade_date),
+                        )
+                        st.rerun()
+
             practice_quantity_input = st.number_input(
                 "株数", min_value=1, value=100, step=100
             )
@@ -3006,15 +3029,7 @@ def _render_practice_chart_section():
     st.divider()
     st.markdown("##### 練習の売買記録一覧")
 
-    # 銘柄未選択（チャート非表示）のrunでもchart_reference_dateを渡せる
-    # よう、上のif practice_code:ブロック内の値に頼らずsession_stateから
-    # 直接読み直す（同じキーを参照しており、値は同じになる）
-    current_chart_reference_date = st.session_state.get(
-        "chart_date_search_pref_practice"
-    )
-    _render_practice_trade_table(
-        practice_trades, current_chart_reference_date, timeframe
-    )
+    _render_practice_trade_table(practice_trades, timeframe)
 
 
 with tab_trades:
