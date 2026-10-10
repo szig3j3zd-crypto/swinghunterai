@@ -118,26 +118,40 @@ def main():
     print(f"対象 : {total}件")
     print()
 
-    # DBアクセス（最新保存日の取得）はメインスレッドでまとめて先に行う
+    # DBアクセス（最新保存日の取得）はメインスレッドで行う
     # （並列ワーカーにDBを触らせないため。2026-10-10追加）
+    # 注意: 以前はここを「全銘柄分まとめてdict comprehensionで取得」と
+    # していたが、3704件規模だと無言のまま数分かかることがあり、
+    # 「対象：3704件」の後で止まって見えると報告があった
+    # （2026-10-10）。取得（executor.submit）と同じループ内で行い、
+    # BATCH_SIZEごとに進捗を表示することで、この区間でも処理が
+    # 進んでいることが分かるようにした
     stock_rows = list(stocks.iterrows())
-    latest_dates = {
-        stock["code"]: get_latest_date(stock["code"])
-        for _, stock in stock_rows
-    }
+    latest_dates = {}
 
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     ) as executor:
 
-        future_to_stock = {
-            executor.submit(
+        future_to_stock = {}
+
+        for submit_index, (_, stock) in enumerate(stock_rows, start=1):
+
+            code = stock["code"]
+            latest_date = get_latest_date(code)
+            latest_dates[code] = latest_date
+
+            future = executor.submit(
                 fetch_stock_data,
                 stock["ticker"],
-                latest_dates[stock["code"]]
-            ): stock
-            for _, stock in stock_rows
-        }
+                latest_date
+            )
+            future_to_stock[future] = stock
+
+            if submit_index % BATCH_SIZE == 0:
+                print(f"取得予約 : {submit_index}/{total}件")
+
+        print()
 
         for index, future in enumerate(
             concurrent.futures.as_completed(future_to_stock),
