@@ -1,3 +1,4 @@
+import concurrent.futures
 import sys
 import time
 from pathlib import Path
@@ -24,11 +25,16 @@ from logs.logger import save_download_history
 # =====================================
 
 
-# IRBANK APIのレート制限（同一アカウント合算で60リクエスト/分、超過は429）に
-# 収まるよう、1銘柄1リクエスト前提で60/60=1.0秒に安全マージンを乗せた値にする。
-# 継続的にこの間隔を守れば429は原理的に発生しないため、旧仕様にあった
-# 200銘柄ごとの追加待機（BATCH_SLEEP）は不要になり廃止した
-REQUEST_SLEEP = 1.1      # 1銘柄待機
+# Yahoo Finance／J-Quantsへの要求頻度を抑えるための、ワーカー1つあたりの
+# 取得間隔（2026-10-10改訂。以前は「IRBANK APIのレート制限に合わせた値」
+# として1.1秒にしていたが、株価取得でIRBANKは使っていない（IRBANKは
+# 銘柄一覧取得専用。ProviderManager参照）ため、その根拠自体が誤りだった。
+# 「株価取得が遅い、速くできないか」との要望を受けて見直し、下記の
+# 並列取得（MAX_WORKERS）と合わせて、安全マージンを残しつつ待機を短縮
+# した。ワーカーごとにこの間隔を空けるため、合計のリクエスト頻度は
+# おおよそMAX_WORKERS倍になる）
+REQUEST_SLEEP = 0.5     # ワーカー1つあたりの待機（秒）
+MAX_WORKERS = 5          # 同時に取得する銘柄数
 BATCH_SIZE = 200         # 200銘柄ごとに進捗表示のみ行う
 
 manager = DownloadManager()
@@ -59,6 +65,33 @@ def save_failed_log(failed_list):
     print("logs/failed_download.csv")
 
 
+def fetch_stock_data(ticker, latest_date):
+    """
+    1銘柄分の株価データをProvider経由で取得する
+    （ネットワークI/Oのみ。DBへは一切アクセスしない）
+
+    ThreadPoolExecutorのワーカーから呼ぶ想定（2026-10-10追加。「並列で
+    取得することは可能なの？」との要望のため、取得（ネットワーク待ちが
+    支配的）だけを並列化した。保存（DB書き込み）はmain()側でメイン
+    スレッドから1件ずつ順番に行う。このプロジェクトのローカル実行は
+    Turso Embedded Replicaモードを使っており、複数の接続が同時に同じ
+    ローカルファイルへ書き込むと「database is locked」になる実績が
+    本セッション中に複数回あったため、DBアクセス（get_latest_date・
+    save_stock_data）は常にメインスレッドからのみ行うようにし、
+    ワーカー側はネットワーク取得専用にしている。Provider（Yahoo/
+    J-Quants）はいずれも呼び出しごとに新しいクライアントを作る作りで
+    インスタンス変数を持たないため、並列呼び出しでも安全
+    """
+
+    try:
+        return manager.download(
+            ticker,
+            latest_date
+        )
+    finally:
+        time.sleep(REQUEST_SLEEP)
+
+
 def main():
 
     start_time = time.time()
@@ -85,69 +118,129 @@ def main():
     print(f"対象 : {total}件")
     print()
 
-    for index, (_, stock) in enumerate(
-        stocks.iterrows(),
-        start=1
-    ):
+    # DBアクセス（最新保存日の取得）はメインスレッドでまとめて先に行う
+    # （並列ワーカーにDBを触らせないため。2026-10-10追加）
+    stock_rows = list(stocks.iterrows())
+    latest_dates = {
+        stock["code"]: get_latest_date(stock["code"])
+        for _, stock in stock_rows
+    }
 
-        code = stock["code"]
-        ticker = stock["ticker"]
-        company_name = stock["company_name"]
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=MAX_WORKERS
+    ) as executor:
 
-        print("-" * 40)
-        print(f"{code} 更新開始")
+        future_to_stock = {
+            executor.submit(
+                fetch_stock_data,
+                stock["ticker"],
+                latest_dates[stock["code"]]
+            ): stock
+            for _, stock in stock_rows
+        }
 
-        latest_date = get_latest_date(code)
+        for index, future in enumerate(
+            concurrent.futures.as_completed(future_to_stock),
+            start=1
+        ):
 
-        if latest_date is None:
-            print("初回取得")
-        else:
-            print(f"最新保存日 : {latest_date}")
+            stock = future_to_stock[future]
 
-        try:
+            code = stock["code"]
+            ticker = stock["ticker"]
+            company_name = stock["company_name"]
+            latest_date = latest_dates[code]
 
-            provider_name, stock_data = manager.download(
-                ticker,
-                latest_date
-            )
+            print("-" * 40)
+            print(f"{code} 更新開始")
 
-            # Provider取得失敗（全Providerが例外で失敗した場合、
-            # ProviderManagerはprovider_name=Noneを返す。2026-09-13修正:
-            # 以前はstock_data is Noneをチェックしていたが、全滅時も
-            # ProviderManagerは空のDataFrame（Noneではない）を返すため
-            # このチェックには到達せず、本当の取得失敗が下の「更新データ
-            # なし」扱いになり、失敗としてカウント・記録されていなかった）
-            if provider_name is None:
+            if latest_date is None:
+                print("初回取得")
+            else:
+                print(f"最新保存日 : {latest_date}")
 
-                print("Provider取得失敗")
+            try:
 
-                failed_list.append(
-                    (
-                        code,
-                        ticker,
-                        company_name
+                provider_name, stock_data = future.result()
+
+                # Provider取得失敗（全Providerが例外で失敗した場合、
+                # ProviderManagerはprovider_name=Noneを返す。2026-09-13
+                # 修正: 以前はstock_data is Noneをチェックしていたが、
+                # 全滅時もProviderManagerは空のDataFrame（Noneではない）を
+                # 返すためこのチェックには到達せず、本当の取得失敗が下の
+                # 「更新データなし」扱いになり、失敗としてカウント・
+                # 記録されていなかった）
+                if provider_name is None:
+
+                    print("Provider取得失敗")
+
+                    failed_list.append(
+                        (
+                            code,
+                            ticker,
+                            company_name
+                        )
                     )
+
+                    error += 1
+
+                    continue
+
+                # 更新不要
+                if stock_data.empty:
+
+                    print("更新データなし")
+
+                    success += 1
+
+                    continue
+
+                # データ品質チェック
+                if not DataValidator.validate(
+                    stock_data
+                ):
+
+                    print("データ検証失敗")
+
+                    failed_list.append(
+                        (
+                            code,
+                            ticker,
+                            company_name
+                        )
+                    )
+
+                    error += 1
+
+                    continue
+
+                insert_count, duplicate_count = save_stock_data(
+                    stock_data,
+                    code
                 )
 
-                error += 1
+                save_stock_csv(
+                    stock_data,
+                    company_name,
+                    ticker
+                )
 
-                continue
+                print(f"Provider : {provider_name}")
+                print(f"取得件数 : {len(stock_data)}件")
+                print(f"新規保存 : {insert_count}件")
+                print(f"重複     : {duplicate_count}件")
 
-            # 更新不要
-            if stock_data.empty:
+                if provider_name == "Yahoo":
+                    yahoo_success += 1
 
-                print("更新データなし")
+                elif provider_name == "J-Quants":
+                    jquants_success += 1
 
                 success += 1
 
-                continue
+            except Exception as e:
 
-            # データ品質チェック
-            if not DataValidator.validate(
-                stock_data
-            ):
-
-                print("データ検証失敗")
+                print(e)
 
                 failed_list.append(
                     (
@@ -159,55 +252,13 @@ def main():
 
                 error += 1
 
-                continue
+            if index % BATCH_SIZE == 0:
 
-            insert_count, duplicate_count = save_stock_data(
-                stock_data,
-                code
-            )
+                print()
 
-            save_stock_csv(
-                stock_data,
-                company_name,
-                ticker
-            )
-
-            print(f"Provider : {provider_name}")
-            print(f"取得件数 : {len(stock_data)}件")
-            print(f"新規保存 : {insert_count}件")
-            print(f"重複     : {duplicate_count}件")
-
-            if provider_name == "Yahoo":
-                yahoo_success += 1
-
-            elif provider_name == "J-Quants":
-                jquants_success += 1
-
-            success += 1
-
-        except Exception as e:
-
-            print(e)
-
-            failed_list.append(
-                (
-                    code,
-                    ticker,
-                    company_name
-                )
-            )
-
-            error += 1
-
-        time.sleep(REQUEST_SLEEP)
-
-        if index % BATCH_SIZE == 0:
-
-            print()
-
-            print("=" * 40)
-            print(f"{index}銘柄完了 / {total}")
-            print("=" * 40)
+                print("=" * 40)
+                print(f"{index}銘柄完了 / {total}")
+                print("=" * 40)
 
     if failed_list:
 
