@@ -39,6 +39,35 @@ BATCH_SIZE = 200         # 200銘柄ごとに進捗表示のみ行う
 
 manager = DownloadManager()
 
+DB_RETRY_COUNT = 3       # DBアクセス（Turso）失敗時の最大リトライ回数
+DB_RETRY_BACKOFF = 1.5   # リトライ間隔（秒）。試行回数に応じて線形に伸ばす
+
+
+def _call_with_retry(func, *args, **kwargs):
+    """
+    DBアクセス関数をリトライ付きで呼ぶ（2026-10-17追加）。
+
+    Turso側が一時的に429（Too many requests / load-shed）を返すことがあり、
+    これまでget_latest_date・save_stock_dataの呼び出しに例外処理が無かった
+    ため、1件でも失敗すると3704件の更新処理全体がそこで完全に停止して
+    しまっていた。一時的なエラーとして数回リトライし、それでも失敗したら
+    呼び出し元に例外を投げて「その銘柄だけ」失敗扱いにする
+    """
+
+    last_error = None
+
+    for attempt in range(DB_RETRY_COUNT):
+
+        try:
+            return func(*args, **kwargs)
+
+        except Exception as e:
+            last_error = e
+            if attempt < DB_RETRY_COUNT - 1:
+                time.sleep(DB_RETRY_BACKOFF * (attempt + 1))
+
+    raise last_error
+
 
 def save_failed_log(failed_list):
     """
@@ -146,7 +175,18 @@ def main():
         for submit_index, (_, stock) in enumerate(stock_rows, start=1):
 
             code = stock["code"]
-            latest_date = get_latest_date(code)
+
+            try:
+                latest_date = _call_with_retry(get_latest_date, code)
+
+            except Exception as e:
+                print(f"{code} 最新保存日の取得に失敗（スキップ）: {e}")
+                failed_list.append(
+                    (code, stock["ticker"], stock["company_name"])
+                )
+                error += 1
+                continue
+
             latest_dates[code] = latest_date
 
             future = executor.submit(
@@ -242,7 +282,8 @@ def main():
 
                 db_write_start = time.time()
 
-                insert_count, duplicate_count = save_stock_data(
+                insert_count, duplicate_count = _call_with_retry(
+                    save_stock_data,
                     stock_data,
                     code
                 )
