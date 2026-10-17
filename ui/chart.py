@@ -231,6 +231,86 @@ def _compute_month_start_dates(df):
     return target_dates
 
 
+def _month_tick_labels(month_start_dates, visible_start_date=None):
+
+    """
+    _compute_month_start_dates()が返す月初日付の一覧から、出来高チャート下に
+    並べる日付軸ラベルの文字列一覧を作る（2026-10-17追加。「年/月」表示では
+    月ごとの目盛すべてに年を出すと隣り合うラベル同士が窮屈で重なるため、
+    年を特定できる最小限の目盛だけ「年/月」のフル表示にし、残りは月のみに
+    する：一番古い（先頭の）目盛、年が変わる1月の目盛、初期表示される範囲の
+    左端の目盛）
+
+    visible_start_date
+        初期表示する範囲（x_range）の開始日。これも「年/月」のフル表示に
+        含めないと、表示期間全体の先頭（一番古い目盛）が初期表示の範囲外
+        （横スクロールしないと見えない位置）にあり、かつ範囲内に1月の
+        目盛も無い場合、初期表示に年が1つも表示されなくなるため
+    """
+
+    visible_start_index = None
+    if visible_start_date is not None:
+        for i, month_start in enumerate(month_start_dates):
+            if month_start >= visible_start_date:
+                visible_start_index = i
+                break
+
+    labels = []
+    for i, month_start in enumerate(month_start_dates):
+        if i == 0 or i == visible_start_index or month_start.month == 1:
+            labels.append(month_start.strftime("%Y/%m"))
+        else:
+            labels.append(month_start.strftime("%m"))
+
+    return labels
+
+
+def _ten_day_tick_dates(df):
+
+    """
+    表示幅が短い（2〜3ヶ月、日単位で見たい）場合の日付軸の目盛位置を、
+    最新日を起点に10日おきに求める（2026-10-17追加。「日付の表示間隔は
+    10日ごと」との要望のため。Plotly自動目盛だと表示幅によって間隔が
+    揃わなかった）
+
+    各目盛位置はその日以前で最初に実データが存在する日にスナップする
+    （_compute_month_start_dates()と同じ理由。10日おきの計算上の日付
+    そのものが土日・祝日で実データが無いことがあるため）
+    """
+
+    dates = pd.to_datetime(df["date"]).dt.normalize().sort_values()
+    if dates.empty:
+        return []
+
+    target_dates = []
+    cursor = dates.iloc[-1]
+    first_date = dates.iloc[0]
+    while cursor >= first_date:
+        on_or_before = dates[dates <= cursor]
+        if not on_or_before.empty:
+            target_dates.append(on_or_before.iloc[-1])
+        cursor -= pd.Timedelta(days=10)
+
+    return sorted(set(target_dates))
+
+
+def _short_width_tick_labels(tick_dates):
+
+    """
+    _ten_day_tick_dates()が返す目盛日付の一覧から、出来高チャート下に
+    並べる日付軸ラベルの文字列一覧を作る（2026-10-17追加。「3ヶ月以内の
+    表示は右端は年/月/日とし、それ以外は月/日とする」との要望のため）
+    """
+
+    if not tick_dates:
+        return []
+
+    labels = [date.strftime("%m/%d") for date in tick_dates]
+    labels[-1] = tick_dates[-1].strftime("%Y/%m/%d")
+
+    return labels
+
+
 def _format_or_dash(value, fmt):
 
     return format(value, fmt) if pd.notna(value) else "-"
@@ -466,7 +546,8 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
     # ため）。yref="paper"でy0=0・y1=1にすることで、出来高サブプロットの
     # 有無に関わらず、常にチャート全体（ローソク足～出来高）を縦断する線に
     # なる（row/col指定でサブプロットごとに描く方式より単純で確実）
-    for month_start_date in _compute_month_start_dates(df):
+    month_start_dates = _compute_month_start_dates(df)
+    for month_start_date in month_start_dates:
         fig.add_shape(
             type="line",
             xref="x",
@@ -481,9 +562,32 @@ def build_price_chart(df, show_candlestick=True, visible_ma=(), show_volume=True
 
     # 出来高チャート下の日付ラベル・ホバー表示の日付を日本式（年/月、月/日）に統一する。
     # 既定は"Mar 2026"のような英語表記になるため変更する。Plotly側の自動目盛間隔
-    # （dtickrange）は狙った境界に一致しないことがあり不安定なため、呼び出し側
-    # （選択された表示期間）から明示的に受け取ったtick_formatをそのまま使う
-    fig.update_xaxes(tickformat=tick_format)
+    # （dtickrange）は狙った境界に一致しないことがあり不安定なため、tickformatで
+    # 一律フォーマットするのではなく、呼び出し側（選択された表示幅）に応じて
+    # tickvals/ticktextを明示的に指定する（2026-10-17変更）。
+    # 「年/月」（長い表示幅）では月初の目盛（月の縦線と同じ位置、
+    # _month_tick_labels参照）だけに絞った上で、先頭と1月の目盛だけ
+    # 「年/月」、それ以外は月のみのラベルにする。「月/日」（3ヶ月以内の
+    # 短い表示幅）では10日おきの目盛にし、右端（最新日）だけ「年/月/日」、
+    # それ以外は「月/日」のラベルにする
+    if tick_format == "%Y/%m":
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=month_start_dates,
+            ticktext=_month_tick_labels(
+                month_start_dates,
+                visible_start_date=x_range[0] if x_range is not None else None,
+            ),
+        )
+    elif tick_format == "%m/%d":
+        ten_day_dates = _ten_day_tick_dates(df)
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=ten_day_dates,
+            ticktext=_short_width_tick_labels(ten_day_dates),
+        )
+    else:
+        fig.update_xaxes(tickformat=tick_format)
     fig.update_xaxes(hoverformat="%Y/%m/%d")
 
     # 縦の点線（スパイクライン）を出来高サブプロットまで伸ばす
@@ -935,7 +1039,10 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         }}
 
         // スクロールバーのつまみの位置・幅を、現在のxaxis.rangeが表示期間
-        // 全体（barTimestampsの最小〜最大）のどこに当たるかから計算する
+        // 全体（barTimestampsの最小〜最大）のどこに当たるかから計算する。
+        // ドラッグ・ピンチズーム・矢印キー等、実際にPlotly側のrelayout
+        // イベントが発火した直後（attachRelayoutListener経由）に呼ぶ用で、
+        // その時点のgd._fullLayout.xaxis.rangeは常に最新・正確
         function updateThumb(gd, scrollState) {{
             if (!scrollState) return;
             const range = gd && gd._fullLayout && gd._fullLayout.xaxis
@@ -950,6 +1057,31 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
 
             let leftPct = ((curStartMs - minMs) / totalMs) * 100;
             let widthPct = ((curEndMs - curStartMs) / totalMs) * 100;
+            leftPct = Math.max(0, Math.min(leftPct, 100));
+            widthPct = Math.max(2, Math.min(widthPct, 100 - leftPct));
+            thumb.style.left = leftPct + "%";
+            thumb.style.width = widthPct + "%";
+        }}
+
+        // つまみの位置・幅を、Plotly側の現在のrelayout状態を読まず、
+        // Python側から渡された「表示するバーの本数・開始位置」だけから
+        // 直接計算する（2026-10-17追加）。setup()の初回呼び出し時点では、
+        // このスクロール同期iframeとst.plotly_chart（別のStreamlitコン
+        // ポーネント）の描画順序はStreamlitから保証されておらず、Plotly側が
+        // まだ直前（表示幅変更前）の範囲のまま再描画を終えていないことが
+        // ある。その状態でupdateThumb()のようにgd._fullLayout.xaxis.rangeを
+        // 読んでしまうと、古い表示幅を基準にした誤ったつまみ幅になる
+        // （実際に発生・報告を受けて修正：表示幅を切り替えた直後だけ
+        // つまみがズレて見え、矢印キーでチャートを動かす＝relayoutイベントが
+        // 一度発火してattachRelayoutListener側のupdateThumb()が呼ばれると
+        // 正しい値に直っていた）。バーの本数ベースの比率はPython側が
+        // 渡した値そのものなのでこの初回描画時点でも確実に正しい
+        function updateThumbFromIndices(scrollState) {{
+            const total = scrollState.barDates.length;
+            if (total === 0) return;
+
+            let leftPct = (scrollState.startIndex / total) * 100;
+            let widthPct = (scrollState.visibleBarCount / total) * 100;
             leftPct = Math.max(0, Math.min(leftPct, 100));
             widthPct = Math.max(2, Math.min(widthPct, 100 - leftPct));
             thumb.style.left = leftPct + "%";

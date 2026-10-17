@@ -133,17 +133,15 @@ CHART_DISPLAY_WIDTH_OPTIONS = (
 CHART_PERIOD_DEFAULT = "5年"
 CHART_DISPLAY_WIDTH_DEFAULT = "6ヶ月"
 
-# 表示幅ラベル（暦期間）を時間足ごとのローソク足本数に変換する際の、
-# 1暦日あたりのおおよその本数。日足は営業日（週5日/7日）、週足は1週間に
-# 1本、月足は1ヶ月（平均30.44暦日）に1本という概算値。表示幅を時間足間で
-# 揃える（CHART_DISPLAY_WIDTH_OPTIONSから本数が最も近いラベルを選ぶ）ための
-# ものであり、実際の本数計算自体は_render_chart_block側で実データ
-# （chart_df_in_period）から数える
-CHART_BARS_PER_CALENDAR_DAY = {
-    "daily": 5 / 7,
-    "weekly": 1 / 7,
-    "monthly": 1 / 30.4368,
-}
+# 週足・月足の表示幅は、日足の表示幅（ユーザーが選べる唯一の基準値）を
+# 元に自動計算する。日足換算の月数をそれぞれ5倍・10倍した期間を表示幅と
+# する（2026-10-17変更。以前は「どの時間足でもローソク足の本数が揃うよう
+# CHART_DISPLAY_WIDTH_OPTIONSから最も近いラベルを選び直す」方式だったが、
+# 選択肢に丸めた表示用ラベルを毎回本数へ逆変換して保存し直していたため、
+# 時間足を切り替えるたびに丸め誤差が蓄積し、日足/週足/月足を一周しても
+# 元の表示幅に戻らない不具合があった。月足の倍率は当初20倍にしていたが、
+# 本数が多すぎてチャートが見づらいとの指摘を受け10倍に変更した）
+CHART_DISPLAY_WIDTH_MULTIPLIER = {"weekly": 5, "monthly": 10}
 
 # 日単位で見たい短い表示幅では「月/日」、それより長い表示幅では「年/月」で
 # 出来高チャート下の日付軸ラベルを表示する
@@ -183,6 +181,19 @@ def _period_label_to_offset(label):
         return pd.DateOffset(months=int(label[:-2]))
 
     return pd.DateOffset(years=int(label[:-1]))
+
+
+def _period_label_to_months(label):
+
+    """
+    "6ヶ月" / "3年" のような表示幅ラベルを月数（int）に変換する
+    （週足・月足の表示幅を日足換算の月数から倍率計算するために使う）
+    """
+
+    if label.endswith("ヶ月"):
+        return int(label[:-2])
+
+    return int(label[:-1]) * 12
 
 
 def _period_label_covering_date(latest_date, target_date):
@@ -230,42 +241,6 @@ def _close_price_on_or_before(chart_df, target_date):
     reference_index = min(max(int(reference_index), 0), len(chart_df) - 1)
 
     return float(chart_df.iloc[reference_index]["close"])
-
-
-# _width_label_to_bar_count()で表示幅ラベルを暦日数に変換する際の基準日。
-# DateOffsetの加算結果（月内日数の違い等）が呼び出しのたびにブレないよう
-# 固定の日付を使う（本数はあくまで時間足間の比較用の概算値のため、
-# 基準日自体に意味はない）
-_BAR_COUNT_ANCHOR = pd.Timestamp("2020-01-01")
-
-
-def _width_label_to_bar_count(label, timeframe):
-
-    """
-    表示幅ラベル（"6ヶ月"等）を、指定した時間足でのおおよそのローソク足
-    本数に変換する（CHART_BARS_PER_CALENDAR_DAYによる概算。日足/週足/月足で
-    表示幅を揃える際の比較に使う）
-    """
-
-    offset = _period_label_to_offset(label)
-    days = (_BAR_COUNT_ANCHOR + offset - _BAR_COUNT_ANCHOR).days
-
-    return days * CHART_BARS_PER_CALENDAR_DAY[timeframe]
-
-
-def _closest_width_label_for_bar_count(target_bar_count, timeframe):
-
-    """
-    指定した時間足で、目標本数に最も近いローソク足本数になる表示幅ラベルを
-    CHART_DISPLAY_WIDTH_OPTIONSから選ぶ
-    """
-
-    return min(
-        CHART_DISPLAY_WIDTH_OPTIONS,
-        key=lambda label: abs(
-            _width_label_to_bar_count(label, timeframe) - target_bar_count
-        ),
-    )
 
 
 def _is_mobile_viewport():
@@ -864,35 +839,52 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         )
     st.session_state[period_pref_key] = period_label
 
-    # 表示幅は「ローソク足の本数」を時間足に依存しない基準として保持する
-    # （key・session_stateとも時間足を含めない）。表示するラベル自体は
-    # 時間足ごとに、その本数に最も近いものを選び直す（2026-08-30改訂。
-    # 以前はラベル文字列をそのまま共有していたため、同じ「6ヶ月」でも
-    # 日足は約130本・週足は約26本・月足は約6本と表示本数が大きく異なり、
-    # ローソク足の見た目の太さが時間足を切り替えるたびに揃わなかった。
-    # 本数を基準にすることで太さの見た目を揃え、表示上のラベルは実際に
-    # その時間足で表示されている期間に合わせる。以前あった「表示期間・
-    # 表示幅は時間足を切り替えても値を変えない」という制約は、値の実体を
-    # 文字列ラベルから本数に変えたことで、ラベル表示のほうが時間足ごとに
-    # 変わる形に変更した）
-    width_pref_key = f"chart_display_width_bar_target_{key_prefix}"
-    default_bar_target = _width_label_to_bar_count(
-        CHART_DISPLAY_WIDTH_DEFAULT, "daily"
-    )
-    bar_target = st.session_state.get(width_pref_key, default_bar_target)
-    suggested_width_label = _closest_width_label_for_bar_count(
-        bar_target, chart_timeframe
-    )
-    with width_col:
-        display_width_label = st.selectbox(
-            "チャート表示幅",
-            options=CHART_DISPLAY_WIDTH_OPTIONS,
-            index=CHART_DISPLAY_WIDTH_OPTIONS.index(suggested_width_label),
-            key=f"chart_display_width_select_{key_prefix}_{chart_timeframe}",
+    # 表示幅は日足の設定値（ユーザーが選べる唯一の基準値）をそのまま
+    # key・session_stateで保持する（時間足を含めない）。週足・月足は
+    # この日足設定から自動計算する（日足換算の月数をそれぞれ5倍・10倍する。
+    # 例えば日足が6ヶ月なら週足は30ヶ月、月足は60ヶ月）ため、日足以外では
+    # プルダウンを無効化し、計算結果を表示するだけにする（2026-10-17変更。以前は
+    # 「どの時間足でもローソク足の本数が揃うようCHART_DISPLAY_WIDTH_OPTIONS
+    # から最も近いラベルを選び直す」方式だったが、丸めた表示用ラベルを
+    # 毎回本数へ逆変換して保存し直していたため、時間足を切り替えるたびに
+    # 丸め誤差が蓄積し、日足/週足/月足を一周しても元の表示幅に戻らない
+    # 不具合があった）
+    width_pref_key = f"chart_display_width_label_{key_prefix}"
+    daily_width_label = st.session_state.get(width_pref_key, CHART_DISPLAY_WIDTH_DEFAULT)
+
+    if chart_timeframe == "daily":
+        with width_col:
+            display_width_label = st.selectbox(
+                "チャート表示幅",
+                options=CHART_DISPLAY_WIDTH_OPTIONS,
+                index=CHART_DISPLAY_WIDTH_OPTIONS.index(daily_width_label),
+                key=f"chart_display_width_select_{key_prefix}_{chart_timeframe}",
+            )
+        st.session_state[width_pref_key] = display_width_label
+    else:
+        derived_months = (
+            _period_label_to_months(daily_width_label)
+            * CHART_DISPLAY_WIDTH_MULTIPLIER[chart_timeframe]
         )
-    st.session_state[width_pref_key] = _width_label_to_bar_count(
-        display_width_label, chart_timeframe
-    )
+        display_width_label = f"{derived_months}ヶ月"
+        with width_col:
+            # 選択肢を計算結果の1つだけにしたdisabledのselectbox。
+            # keyに計算結果自体を含めることで、日足側の設定が変わって
+            # 表示するラベルが変わるたびに別widget扱いにし、
+            # 「保存済みの選択値が新しい選択肢に無い」というStreamlitの
+            # エラーを避ける
+            st.selectbox(
+                "チャート表示幅",
+                options=[display_width_label],
+                index=0,
+                disabled=True,
+                help="週足は日足設定の5倍、月足は10倍の期間を自動表示します"
+                "（表示幅を変えるには日足に切り替えてください）。",
+                key=(
+                    f"chart_display_width_select_{key_prefix}_"
+                    f"{chart_timeframe}_{display_width_label}"
+                ),
+            )
 
     # 年月日で検索すると、その日付（に最も近い、その日以前の実データがある日）が
     # チャートの一番右（最新側）に来るよう表示位置をジャンプさせる。
@@ -2748,8 +2740,8 @@ def _render_practice_chart_section():
                 saved_view["last_period_label"]
             )
         if saved_view.get("last_width_label"):
-            st.session_state["chart_display_width_bar_target_practice"] = (
-                _width_label_to_bar_count(saved_view["last_width_label"], "daily")
+            st.session_state["chart_display_width_label_practice"] = (
+                saved_view["last_width_label"]
             )
         if saved_view.get("last_search_date"):
             st.session_state["chart_date_search_pref_practice"] = (
@@ -2806,12 +2798,8 @@ def _render_practice_chart_section():
         # チャートの表示期間・表示幅・年月日検索は_render_chart_block内で
         # session_stateへ書き戻されるため、ここで読み取ってDBへ保存する
         current_period_label = st.session_state.get("chart_period_pref_practice")
-        current_width_bar_target = st.session_state.get(
-            "chart_display_width_bar_target_practice"
-        )
-        current_width_label = (
-            _closest_width_label_for_bar_count(current_width_bar_target, "daily")
-            if current_width_bar_target is not None else None
+        current_width_label = st.session_state.get(
+            "chart_display_width_label_practice"
         )
         chart_reference_date = st.session_state.get(
             "chart_date_search_pref_practice"
