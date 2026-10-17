@@ -58,7 +58,10 @@ def save_stock_data(data, code):
             重複件数
     """
 
-    conn = create_connection()
+    # 2026-10-17: Embedded Replica経由の書き込みは直接リモート接続より大幅に
+    # 遅いことが実測で分かったため、書き込みはforce_remote=Trueで直接リモートへ
+    # 行う（database.db.create_connectionのdocstring参照）
+    conn = create_connection(force_remote=True)
 
     cursor = conn.cursor()
 

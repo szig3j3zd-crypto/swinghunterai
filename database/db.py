@@ -18,7 +18,7 @@ EMBEDDED_REPLICA_PATH = "data/stock_replica.db"
 TURSO_SYNC_INTERVAL_SECONDS = 5
 
 
-def create_connection():
+def create_connection(force_remote=False):
     """
     DB接続。
 
@@ -31,6 +31,13 @@ def create_connection():
       アプリが起動できないときの緊急退避用。Embedded Replicaのローカルキャッシュ
       （data/stock_replica.db）が既にあればそちらへ接続する（Turso運用開始後の
       最新データが入っているため）。無ければdata/stock.dbへ接続する
+    - force_remote=Trueなら、TURSO_EMBEDDED_REPLICAの設定に関わらずTursoへ直接リモート
+      接続する（2026-10-17追加。実測で、Embedded Replica経由の書き込み（INSERT+commit）
+      は1件あたり1〜2秒かかり、直接リモート接続での書き込み（約0.15秒）より10倍近く
+      遅いことが分かった。株価更新スクリプトのように大量に書き込むだけの用途では、
+      読み込み専用のEmbedded Replicaの恩恵がない上に書き込みが遅くなる一方なので、
+      書き込み側だけ直接リモートに逃がす。読み込み（get_latest_dateなど）は従来通り
+      速いEmbedded Replica経由のままにする）
     - TURSO_EMBEDDED_REPLICA=trueならローカルファイル+自動同期のEmbedded Replicaモード
       （PC用、読み書きが高速）
     - それ以外はTursoへ直接リモート接続する（Streamlit Community Cloud用、ローカル
@@ -47,6 +54,9 @@ def create_connection():
         return sqlite3.connect(DB_PATH)
 
     import libsql
+
+    if force_remote:
+        return libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
 
     if TURSO_EMBEDDED_REPLICA:
         return libsql.connect(

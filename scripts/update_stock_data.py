@@ -129,6 +129,14 @@ def main():
     stock_rows = list(stocks.iterrows())
     latest_dates = {}
 
+    # どこに時間がかかっているか（DB/ファイル書き込み vs ネットワーク取得
+    # 待ち）を実測するための計測（2026-10-11追加。並列化後も処理時間が
+    # あまり短縮されなかったため、接続生成オーバーヘッドを疑って計測した
+    # ところ、それ自体は全体の1〜2%程度しかなく主要因ではなかった。
+    # 次は「実際にどこで時間を使っているか」を本番実行で特定するため、
+    # フェーズごとの所要時間を記録する）
+    submit_phase_start = time.time()
+
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     ) as executor:
@@ -152,6 +160,10 @@ def main():
                 print(f"取得予約 : {submit_index}/{total}件")
 
         print()
+
+        submit_phase_elapsed = time.time() - submit_phase_start
+        process_phase_start = time.time()
+        db_write_elapsed = 0.0
 
         for index, future in enumerate(
             concurrent.futures.as_completed(future_to_stock),
@@ -228,6 +240,8 @@ def main():
 
                     continue
 
+                db_write_start = time.time()
+
                 insert_count, duplicate_count = save_stock_data(
                     stock_data,
                     code
@@ -238,6 +252,8 @@ def main():
                     company_name,
                     ticker
                 )
+
+                db_write_elapsed += time.time() - db_write_start
 
                 print(f"Provider : {provider_name}")
                 print(f"取得件数 : {len(stock_data)}件")
@@ -274,6 +290,12 @@ def main():
                 print(f"{index}銘柄完了 / {total}")
                 print("=" * 40)
 
+    process_phase_elapsed = time.time() - process_phase_start
+    # process_phase_elapsedのうちdb_write_elapsed以外は、ワーカーの
+    # ネットワーク取得（＋REQUEST_SLEEP）待ちでメインスレッドが
+    # ブロックされていた時間とみなせる
+    fetch_wait_elapsed = process_phase_elapsed - db_write_elapsed
+
     if failed_list:
 
         save_failed_log(
@@ -301,6 +323,11 @@ def main():
     print(f"Yahoo成功      : {yahoo_success}")
     print(f"J-Quants成功   : {jquants_success}")
     print(f"処理時間       : {elapsed:.1f}秒")
+    print("-" * 40)
+    print("処理時間の内訳（ボトルネック調査用）")
+    print(f"  取得予約（最新保存日の取得＋submit） : {submit_phase_elapsed:.1f}秒")
+    print(f"  DB・CSV書き込み（メインスレッド合計） : {db_write_elapsed:.1f}秒")
+    print(f"  ネットワーク取得待ち（上記以外）       : {fetch_wait_elapsed:.1f}秒")
     print("=" * 40)
 
 
