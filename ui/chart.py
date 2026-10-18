@@ -1250,14 +1250,32 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
         // 常に最新のチャートを指す）を直接動かす。矢印キーと違い「どの
         // チャートがアクティブか」の判定が要らない（ボタン自体がそのチャート
         // 専用のものであるため）。ボタン自体はページ内に1度しか存在しない
-        // 静的要素なので、リスナー登録もここで1度だけ行う
+        // 静的要素なので、リスナー登録もここで1度だけ行う。
+        //
+        // クリックの直前に必ずensureLiveGd()を呼ぶ（2026-10-18追加。
+        // startDrag()と同じ理由：ポーリング（200ms間隔）が間に合う前に
+        // ボタンを押すと、currentGdがStreamlitの再描画で破棄済み・
+        // 差し替え済みのdivを指したままのことがあり、その状態で
+        // Plotly.relayout()を呼んでも何も起きず「ボタンを押しても
+        // 反応しない」ように見えていた）。クリックしたボタンは今見えている
+        // このチャートのものなので、matchActive()と同様に矢印キーの対象も
+        // このチャートへ合わせておく
+        function activateThisChart(gd) {{
+            window.parent.__swingHunterActiveChart = gd;
+            window.parent.__swingHunterActiveScrollState = currentScrollState;
+            window.parent.__swingHunterActiveStorageKey = storageKey;
+        }}
         stepPrevButton.addEventListener("click", function(e) {{
             e.preventDefault();
-            queueOneBarMove(currentGd, currentScrollState, "left");
+            const liveGd = ensureLiveGd();
+            activateThisChart(liveGd);
+            queueOneBarMove(liveGd, currentScrollState, "left");
         }});
         stepNextButton.addEventListener("click", function(e) {{
             e.preventDefault();
-            queueOneBarMove(currentGd, currentScrollState, "right");
+            const liveGd = ensureLiveGd();
+            activateThisChart(liveGd);
+            queueOneBarMove(liveGd, currentScrollState, "right");
         }});
 
         // つまみ・トラックへの実際の操作は、このscriptを埋め込んだiframe
@@ -1439,6 +1457,7 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             function markActive() {{
                 window.parent.__swingHunterActiveChart = gd;
                 window.parent.__swingHunterActiveScrollState = currentScrollState;
+                window.parent.__swingHunterActiveStorageKey = storageKey;
             }}
             gd.addEventListener("mouseenter", markActive);
             // MAチェックボックスの切替等でチャートdivがStreamlitに作り直され
@@ -1449,9 +1468,24 @@ def build_scroll_sync_script(bar_dates, highs, lows, volumes,
             // これをしないと__swingHunterActiveChartが破棄済み（detached）の
             // 古いdivを指したままになり、Plotly.relayout()がそのdetachedな
             // divに対して呼ばれて何も起きず、マウスをチャートへ戻すまで
-            // 矢印キーが無反応になる不具合があった（実際に発生・再現済み）
+            // 矢印キーが無反応になる不具合があった（実際に発生・再現済み）。
+            //
+            // previousGdでの引き継ぎは、このスクロール同期iframe自体が
+            // Streamlitに作り直されず同じJS実行コンテキストのまま続く場合
+            // （MAチェックボックスの切替等、bar_dates等が変わらない操作）
+            // にしか効かない。日足/週足/月足の切替はbar_datesそのものが
+            // 変わるため、このiframe自体も丸ごと作り直され（新しいJS実行
+            // コンテキストでcurrentGdがnullから始まる）previousGdが常にnull
+            // になり、この経路では引き継げない（実際に発生・報告を受けて
+            // 修正：日足→週足→月足→日足と切り替えた後、チャートへマウスを
+            // 戻すまで矢印キー・下の矢印ボタンの両方が無反応になっていた）。
+            // storageKey（タブ・銘柄単位で時間足を含まず安定）が直前の
+            // アクティブチャートと一致していれば、iframeが作り直されていても
+            // 「同じチャート（表示する時間足が変わっただけ）」とみなして
+            // 引き継ぐ
             if (gd.matches(":hover")
-                    || (previousGd && window.parent.__swingHunterActiveChart === previousGd)) {{
+                    || (previousGd && window.parent.__swingHunterActiveChart === previousGd)
+                    || window.parent.__swingHunterActiveStorageKey === storageKey) {{
                 markActive();
             }}
 

@@ -1054,9 +1054,20 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
         )
         - 1
     )
+    # end_index（表示範囲の右端）は必ずtarget_end_index（検索日に対応する
+    # バー）そのものにする。表示幅（visible_bar_count）ぶんの履歴が
+    # target_end_indexより前に無い場合は、表示幅を保つために右端を前方へ
+    # ずらすのではなく、単に表示本数を少なく（狭く）する（2026-10-18
+    # 修正。以前は右端を前方へずらしていたため、対象期間の先頭に近い日付を
+    # 検索したとき、表示幅が広い時間足ほど右端が検索日から大きく先に
+    # ずれてしまっていた。例えば日足6ヶ月幅なら検索日から数ヶ月程度のズレで
+    # 済むが、月足はその10倍の幅（60ヶ月）のため同じ条件で数年単位の
+    # ズレになっていた。週足・月足の表示幅を日足の5倍・10倍にした変更
+    # （CHART_DISPLAY_WIDTH_MULTIPLIER）と組み合わさって、日足/週足/月足を
+    # 切り替えると右端の日付がバラバラになる不具合として表面化していた）
     target_end_index = min(max(int(target_end_index), 0), total_bar_count - 1)
-    start_index = max(target_end_index - visible_bar_count + 1, 0)
-    end_index = min(start_index + visible_bar_count - 1, total_bar_count - 1)
+    end_index = target_end_index
+    start_index = max(end_index - visible_bar_count + 1, 0)
     start_offset = start_index
     window_start_date = chart_df_in_period["date"].iloc[start_index]
     window_end_date = chart_df_in_period["date"].iloc[end_index]
@@ -1121,9 +1132,18 @@ def _render_chart_block(code, chart_timeframe, key_prefix):
             # 違えば、ユーザーが表示期間/表示幅を明示的に変更した、または
             # 年月日を検索したとみなし、復元をスキップしてPython側の
             # 新しい既定表示（検索日があればその日を一番右にした表示）を
-            # そのまま使う
+            # そのまま使う。
+            #
+            # display_width_labelではなくdaily_width_label（日足の設定値、
+            # 時間足を問わず共通）を使う（2026-10-18修正。「日足/週足/月足の
+            # どれに切り替えても、開いているチャート画面の右端の日付を基準に
+            # する」との要望を調査した結果、display_width_labelは週足・月足で
+            # 日足の設定値から自動計算した別の文字列（例: 日足"6ヶ月"に対し
+            # 週足"30ヶ月"）になるため、時間足を切り替えるだけでview_signature
+            # が変わってしまい、横スクロールした位置が毎回復元されずPython側の
+            # 既定表示（最新日基準）にリセットされていた）
             view_signature=(
-                f"{period_label}:{display_width_label}:{search_date.isoformat()}"
+                f"{period_label}:{daily_width_label}:{search_date.isoformat()}"
             ),
         ),
         # トラック自体は細い（14px）が、ドラッグ中に多少上下にぶれても
