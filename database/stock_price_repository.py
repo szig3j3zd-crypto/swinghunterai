@@ -65,10 +65,24 @@ def save_stock_data(data, code):
 
     cursor = conn.cursor()
 
-    insert_count = 0
-    duplicate_count = 0
-
     try:
+
+        # 1行ずつexecute()していると、直接リモート接続では行数分の往復
+        # （ネットワークラウンドトリップ）が発生し、データ量が多いと
+        # 極端に遅くなる（2026-10-24発見・修正。yfinanceのperiod="max"化で
+        # 1銘柄あたり最大6000行超を扱うようになった結果、1銘柄の保存だけで
+        # 4分以上かかっていた。実測: 6687行の保存に272秒）。
+        # 先に既存の日付一覧を1回のSELECTでまとめて取得し、新規行だけを
+        # executemany()で1回にまとめて送ることで、往復回数を行数に関係なく
+        # 2回（SELECT 1回・executemany 1回）に抑える
+        cursor.execute(
+            "SELECT date FROM stock_prices WHERE code = ?",
+            (code,)
+        )
+        existing_dates = {row[0] for row in cursor.fetchall()}
+
+        rows_to_insert = []
+        duplicate_count = 0
 
         for _, row in data.iterrows():
 
@@ -76,8 +90,23 @@ def save_stock_data(data, code):
                 row["Date"]
             ).strftime("%Y-%m-%d")
 
+            if date in existing_dates:
+                duplicate_count += 1
+                continue
 
-            cursor.execute(
+            rows_to_insert.append((
+                code,
+                date,
+                row["Open"],
+                row["High"],
+                row["Low"],
+                row["Close"],
+                row["Volume"]
+            ))
+
+        if rows_to_insert:
+
+            cursor.executemany(
                 """
                 INSERT OR IGNORE INTO stock_prices
                 (
@@ -91,24 +120,10 @@ def save_stock_data(data, code):
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    code,
-                    date,
-                    row["Open"],
-                    row["High"],
-                    row["Low"],
-                    row["Close"],
-                    row["Volume"]
-                )
+                rows_to_insert
             )
 
-
-            if cursor.rowcount == 1:
-                insert_count += 1
-
-            else:
-                duplicate_count += 1
-
+        insert_count = len(rows_to_insert)
 
         conn.commit()
 

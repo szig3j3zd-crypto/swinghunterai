@@ -15,18 +15,23 @@ from data.csv_writer import save_stock_csv
 from data.validator.data_validator import DataValidator
 
 REQUEST_SLEEP = 1
-DOWNLOAD_PERIOD = "10y"
+# yfinanceのperiodには"20y"のような任意年数の指定肢が無く、10y/5y/...の次は
+# "max"（その銘柄でYahoo Financeが持つ全期間）しか無い。2026-10-18、既存の
+# 10年データをさらに過去へ拡張する要望のため"10y"から変更した
+DOWNLOAD_PERIOD = "max"
 
 manager = DownloadManager()
 
 
 def get_short_history_prime_stocks():
     """
-    プライム市場銘柄のうち、直近10年に満たない履歴しか
-    持っていない銘柄を取得する。
+    プライム市場銘柄のうち、直近20年に満たない履歴しか
+    持っていない銘柄を取得する（2026-10-18、10年→20年に変更。
+    DOWNLOAD_PERIODを"max"にしたことに合わせ、既に深い履歴を
+    持つ銘柄を再取得対象から除外するための閾値を広げた）
     """
 
-    cutoff = (date.today() - timedelta(days=365 * 10)).isoformat()
+    cutoff = (date.today() - timedelta(days=365 * 20)).isoformat()
 
     conn = create_connection()
 
@@ -56,7 +61,7 @@ def main():
     start_time = time.time()
 
     print("=" * 40)
-    print("プライム市場 10年データ拡張開始")
+    print("プライム市場 データ拡張開始（最大取得可能期間まで）")
     print("=" * 40)
 
     stocks = get_short_history_prime_stocks()
@@ -121,7 +126,7 @@ def main():
     elapsed = time.time() - start_time
 
     print("=" * 40)
-    print("プライム市場 10年データ拡張完了")
+    print("プライム市場 データ拡張完了")
     print("=" * 40)
     print(f"対象 : {total}")
     print(f"成功 : {success}")
