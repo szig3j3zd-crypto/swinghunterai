@@ -59,12 +59,23 @@ def get_stock_data(code, limit=None):
     return df
 
 
-def get_latest_date(code):
+def get_latest_date(code, conn=None):
     """
     保存済み最新日付取得
+
+    connを渡した場合はその接続を使い回し、閉じない（2026-11-01追加）。
+    株価更新スクリプトが全銘柄（約3700件）分これを呼ぶ際、毎回
+    create_connection()するとEmbedded Replicaの接続が銘柄数だけ作られ、
+    それぞれのバックグラウンド同期（sync_interval）が同じレプリカファイルの
+    WALを奪い合って「wal_insert_begin failed」「Failed to checkpoint WAL:
+    database is locked」が大量に出ていた。呼び出し側で1本の接続を
+    作って渡すことでこれを防ぐ
     """
 
-    conn = create_connection()
+    own_conn = conn is None
+
+    if own_conn:
+        conn = create_connection()
 
     cursor = conn.cursor()
 
@@ -79,6 +90,7 @@ def get_latest_date(code):
 
     latest_date = cursor.fetchone()[0]
 
-    conn.close()
+    if own_conn:
+        conn.close()
 
     return latest_date

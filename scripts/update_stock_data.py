@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
+from database.db import create_connection
 from database.stock_master_reader import get_active_stocks
 from database.stock_price_reader import get_latest_date
 from database.stock_price_repository import save_stock_data
@@ -67,6 +68,42 @@ def _call_with_retry(func, *args, **kwargs):
                 time.sleep(DB_RETRY_BACKOFF * (attempt + 1))
 
     raise last_error
+
+
+class _WriteConnection:
+    """
+    株価保存用の直接リモート接続を1本だけ保持して使い回す（2026-11-01追加）。
+
+    銘柄ごとに接続を作り直すと、接続確立＋最初のクエリで1銘柄あたり
+    約85ms（全銘柄で約5分）かかっていた。長時間使い回すと途中で接続が
+    切れることがあるため、保存に失敗したら接続を捨て、次の試行
+    （_call_with_retryによるリトライ）で新しく接続し直す
+    """
+
+    def __init__(self):
+        self.conn = None
+
+    def save(self, stock_data, code):
+
+        if self.conn is None:
+            self.conn = create_connection(force_remote=True)
+
+        try:
+            return save_stock_data(stock_data, code, conn=self.conn)
+
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+
+        self.conn = None
 
 
 def save_failed_log(failed_list):
@@ -166,6 +203,14 @@ def main():
     # フェーズごとの所要時間を記録する）
     submit_phase_start = time.time()
 
+    # 最新保存日の取得は全銘柄で1本の接続を使い回す（2026-11-01追加。
+    # 銘柄ごとに接続を作ると、Embedded Replicaのバックグラウンド同期が
+    # 銘柄数だけ並走してレプリカファイルを奪い合い、libsqlの同期エラー
+    # （wal_insert_begin failed等）が大量に出ていた。
+    # stock_price_reader.get_latest_date参照）
+    latest_date_conn = create_connection()
+    write_conn = _WriteConnection()
+
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     ) as executor:
@@ -177,7 +222,9 @@ def main():
             code = stock["code"]
 
             try:
-                latest_date = _call_with_retry(get_latest_date, code)
+                latest_date = _call_with_retry(
+                    get_latest_date, code, latest_date_conn
+                )
 
             except Exception as e:
                 print(f"{code} 最新保存日の取得に失敗（スキップ）: {e}")
@@ -198,6 +245,8 @@ def main():
 
             if submit_index % BATCH_SIZE == 0:
                 print(f"取得予約 : {submit_index}/{total}件")
+
+        latest_date_conn.close()
 
         print()
 
@@ -283,7 +332,7 @@ def main():
                 db_write_start = time.time()
 
                 insert_count, duplicate_count = _call_with_retry(
-                    save_stock_data,
+                    write_conn.save,
                     stock_data,
                     code
                 )
@@ -330,6 +379,8 @@ def main():
                 print("=" * 40)
                 print(f"{index}銘柄完了 / {total}")
                 print("=" * 40)
+
+    write_conn.close()
 
     process_phase_elapsed = time.time() - process_phase_start
     # process_phase_elapsedのうちdb_write_elapsed以外は、ワーカーの
